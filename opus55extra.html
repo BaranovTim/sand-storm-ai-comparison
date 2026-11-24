@@ -1,0 +1,1442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Erg — Golden Hour Dunes</title>
+<style>
+  :root{
+    --ink: rgba(255,238,218,.94);
+    --dim: rgba(255,226,196,.56);
+    --line: rgba(255,214,170,.20);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0705;color:var(--ink);
+    font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;}
+  canvas{display:block;position:fixed;inset:0;width:100vw;height:100vh}
+  .glass{
+    background:linear-gradient(180deg,rgba(30,17,8,.40),rgba(16,9,5,.30));
+    border:1px solid var(--line);border-radius:8px;
+    backdrop-filter:blur(8px) saturate(120%);-webkit-backdrop-filter:blur(8px) saturate(120%);
+    box-shadow:0 10px 34px rgba(0,0,0,.22);
+    transition:opacity .6s ease;
+  }
+  #hud{position:fixed;top:18px;right:18px;padding:11px 15px 10px;min-width:214px;
+    font-size:11px;letter-spacing:.17em;line-height:1.8;pointer-events:none;z-index:3}
+  #hud .r{display:flex;justify-content:space-between;gap:22px}
+  #hud .k{color:var(--dim)}
+  #hud .v{font-variant-numeric:tabular-nums;transition:color .4s}
+  #hud .v.alert{color:#ffad66}
+  #ui{position:fixed;left:18px;bottom:18px;padding:15px 16px 14px;width:316px;
+    font-size:10.5px;letter-spacing:.19em;z-index:3}
+  #ui .lab{display:flex;justify-content:space-between;color:var(--dim);margin-bottom:8px}
+  #ui .lab b{color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums}
+  input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:20px;background:transparent;
+    margin:0 0 12px;cursor:pointer;--p:30%}
+  input[type=range]:focus{outline:none}
+  input[type=range]::-webkit-slider-runnable-track{height:2px;border-radius:2px;
+    background:linear-gradient(90deg,#ffc98a var(--p),rgba(255,220,180,.22) var(--p))}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;margin-top:-6px;border-radius:50%;
+    background:#ffe4c0;box-shadow:0 0 0 4px rgba(255,190,120,.16),0 0 16px rgba(255,165,85,.65)}
+  input[type=range]::-moz-range-track{height:2px;border-radius:2px;background:rgba(255,220,180,.22)}
+  input[type=range]::-moz-range-progress{height:2px;border-radius:2px;background:#ffc98a}
+  input[type=range]::-moz-range-thumb{width:14px;height:14px;border:none;border-radius:50%;background:#ffe4c0;
+    box-shadow:0 0 0 4px rgba(255,190,120,.16),0 0 16px rgba(255,165,85,.65)}
+  .btns{display:flex;gap:8px}
+  button{font:inherit;letter-spacing:.22em;color:var(--ink);background:rgba(255,190,120,.08);
+    border:1px solid rgba(255,200,150,.30);border-radius:6px;padding:10px 8px;cursor:pointer;transition:all .3s ease}
+  button:hover{background:rgba(255,190,120,.17);border-color:rgba(255,200,150,.5)}
+  button:focus{outline:none}
+  #storm{flex:1}
+  #storm.on{background:linear-gradient(180deg,rgba(255,138,48,.55),rgba(186,76,18,.45));
+    border-color:rgba(255,172,104,.75);box-shadow:0 0 24px rgba(255,120,40,.35)}
+  #storm.busy{opacity:.55;cursor:default}
+  #sound{flex:0 0 86px}
+  #hint{position:fixed;right:20px;bottom:18px;font-size:9.5px;letter-spacing:.28em;color:rgba(255,226,196,.38);z-index:3;
+    pointer-events:none;transition:opacity .6s}
+  body.noui .glass, body.noui #hint{opacity:0;pointer-events:none}
+  #fade{position:fixed;inset:0;background:#0b0705;z-index:5;pointer-events:none;display:flex;align-items:center;justify-content:center;
+    font-size:10.5px;letter-spacing:.5em;color:var(--dim);transition:opacity 2.4s ease}
+  #err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:6;padding:40px;text-align:center;
+    font-size:13px;line-height:1.7;letter-spacing:.05em;background:#0b0705;color:var(--ink)}
+</style>
+</head>
+<body>
+<div id="hud" class="glass">
+  <div class="r"><span class="k">WIND</span><span class="v" id="hWind">0.0 m/s</span></div>
+  <div class="r"><span class="k">VISIBILITY</span><span class="v" id="hVis">— m</span></div>
+  <div class="r"><span class="k">FPS</span><span class="v" id="hFps">—</span></div>
+</div>
+<div id="ui" class="glass">
+  <div class="lab"><span>WIND</span><b id="wOut">9.0 m/s</b></div>
+  <input type="range" id="wind" min="0" max="30" step="0.1" value="9" aria-label="Wind speed in metres per second" />
+  <div class="btns">
+    <button id="storm" type="button">SANDSTORM</button>
+    <button id="sound" type="button" aria-label="Toggle wind sound">SOUND</button>
+  </div>
+</div>
+<div id="hint">H · HIDE UI</div>
+<div id="fade">SHAPING DUNES</div>
+<div id="err"></div>
+
+<script>
+  // Shown only if the Three.js module can't be fetched from the CDN (offline, blocked network, etc.)
+  setTimeout(function () {
+    if (!window.__duneStarted) {
+      var e = document.getElementById('err');
+      e.style.display = 'flex';
+      e.innerHTML = 'Could not load Three.js from cdn.jsdelivr.net.<br>This scene needs an internet connection the first time it opens.';
+    }
+  }, 12000);
+</script>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js';
+window.__duneStarted = true;
+
+/* =====================================================================
+   CONFIG
+   ===================================================================== */
+const N_GRID = 128;           // quads per clipmap level side
+const LEVELS = 7;             // clipmap rings
+const S0 = 2.0;               // finest vertex spacing (m)
+const N_SAND = 60000;         // crest spindrift particles
+const N_STREAK = 5000;        // storm streaks flying past the lens
+const STORM_IN = 5.0;         // seconds for the wall to roll in
+const STORM_CLEAR = 6.5;      // seconds to clear
+const WALL_START = 6200;      // metres: where the dust wall appears
+const RHO_STORM = 3.912 / 42; // extinction inside the storm (~40 m visibility)
+
+// low golden-hour sun (elevation 6.5°)
+const SUN = (() => {
+  const h = new THREE.Vector2(0.45, 0.89).normalize();
+  const e = 6.5 * Math.PI / 180;
+  return new THREE.Vector3(h.x * Math.cos(e), Math.sin(e), h.y * Math.cos(e));
+})();
+
+/* =====================================================================
+   ERROR OVERLAY
+   ===================================================================== */
+function fail(msg) {
+  const e = document.getElementById('err');
+  e.style.display = 'flex';
+  e.textContent = msg;
+  document.getElementById('fade').style.opacity = '0';
+}
+
+/* =====================================================================
+   PROCEDURAL NOISE TEXTURE (generated in code — no image assets)
+   R,G: random texels where G(x,y) = R(x+37, y+17) -> cheap 3D noise
+   B,A: second independent random set
+   ===================================================================== */
+function makeNoiseTexture() {
+  const S = 256;
+  let seed = 20261124 >>> 0;
+  const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+  const R = new Uint8Array(S * S), B = new Uint8Array(S * S);
+  for (let i = 0; i < S * S; i++) { R[i] = (rnd() * 256) | 0; B[i] = (rnd() * 256) | 0; }
+  const data = new Uint8Array(S * S * 4);
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const i = y * S + x, j = ((y + 17) & 255) * S + ((x + 37) & 255);
+    data[i * 4] = R[i]; data[i * 4 + 1] = R[j]; data[i * 4 + 2] = B[i]; data[i * 4 + 3] = B[j];
+  }
+  const t = new THREE.DataTexture(data, S, S, THREE.RGBAFormat, THREE.UnsignedByteType);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.magFilter = THREE.LinearFilter;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true;
+  t.needsUpdate = true;
+  return t;
+}
+
+/* =====================================================================
+   CPU MIRROR OF THE GPU DUNE FIELD (same integer hash -> same dunes)
+   Used for the camera so it always floats above the sand.
+   ===================================================================== */
+function ihash(x, y) {
+  let h = Math.imul(x, 0x8da6b343) ^ Math.imul(y, 0xd8163841);
+  h ^= h >>> 16; h = Math.imul(h, 0x7feb352d);
+  h ^= h >>> 15; h = Math.imul(h, 0x846ca68b);
+  h ^= h >>> 16;
+  return (h >>> 0) * 2.3283064365386963e-10;
+}
+function vnoise(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const ux = fx * fx * fx * (fx * (fx * 6 - 15) + 10);
+  const uy = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
+  const X = ix + 32768, Y = iy + 32768;
+  const a = ihash(X, Y), b = ihash(X + 1, Y), c = ihash(X, Y + 1), d = ihash(X + 1, Y + 1);
+  return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
+}
+function fbm(x, y) {
+  let acc = 0, w = 0.5;
+  for (let i = 0; i < 3; i++) {
+    acc += w * vnoise(x, y);
+    const nx = 0.8 * x + 0.6 * y, ny = -0.6 * x + 0.8 * y;
+    x = 2.03 * nx + 17.3; y = 2.03 * ny + 9.1;
+    w *= 0.5;
+  }
+  return acc / 0.875;
+}
+const C1 = 0.80, C2 = 0.68, LAMBDA1 = 230, LAMBDA2 = 96;
+const fract = (x) => x - Math.floor(x);
+function prof(u, c) {
+  if (u < c) { const s = u / c; return s * s * (2 - s); }
+  const t = (1 - u) / (1 - c); return t * t * (2 - t);
+}
+function terrainH(x, z) {
+  const w = fbm(x / 420 + 3.1, z / 420 + 7.7);
+  const v = vnoise(x / 115 + 11.0, z / 115 - 4.0);
+  const ph1 = (x + 0.14 * z + 100 * (w - 0.5) + 26 * (v - 0.5)) / LAMBDA1;
+  const a = fbm(x / 1100 - 5.2, z / 1100 + 1.3);
+  const a1 = 4 + 44 * a * a;
+  const w2 = fbm(x / 260 - 8.3, z / 260 + 2.9);
+  const ph2 = (x * 0.5 + z * 0.8660254 + 60 * (w2 - 0.5)) / LAMBDA2;
+  const a2 = 1 + 6 * vnoise(x / 520 + 4.4, z / 520 - 6.6);
+  const b = fbm(x / 2400 + 1.7, z / 2400 - 3.3);
+  return a1 * prof(fract(ph1), C1) + a2 * prof(fract(ph2), C2) + 110 * (b - 0.5);
+}
+
+/* =====================================================================
+   SHARED GLSL
+   ===================================================================== */
+const GLSL_COMMON = /* glsl */`
+#define C1 0.80
+#define C2 0.68
+#define LAMBDA1 230.0
+#define LAMBDA2 96.0
+
+uniform float uTime;
+uniform vec3  uCamPos;
+uniform vec3  uSunDir;
+uniform vec3  uSunCol;
+uniform vec3  uSkyAmb;
+uniform vec3  uBounce;
+uniform float uWind;
+uniform float uWindTravel;
+uniform float uHaze;
+uniform float uStormDens;
+uniform float uWallS;
+uniform float uWallVis;
+uniform float uMood;
+uniform float uDustBright;
+uniform float uWallDens;
+uniform sampler2D uNoise;
+
+const vec2 D2 = vec2(0.5, 0.8660254);
+const mat2 FR = mat2(0.8, -0.6, 0.6, 0.8);
+
+// ---------- integer hash value noise (bit-identical with the JS mirror) ----------
+uint ihash(uvec2 q){
+  uint h = (q.x * 0x8da6b343u) ^ (q.y * 0xd8163841u);
+  h ^= h >> 16u; h *= 0x7feb352du;
+  h ^= h >> 15u; h *= 0x846ca68bu;
+  h ^= h >> 16u;
+  return h;
+}
+float h2f(ivec2 i){ return float(ihash(uvec2(i + 32768))) * 2.3283064365386963e-10; }
+
+// value noise + analytic derivative
+vec3 vnoised(vec2 p){
+  vec2 i = floor(p);
+  vec2 f = p - i;
+  vec2 u  = f*f*f*(f*(f*6.0 - 15.0) + 10.0);
+  vec2 du = 30.0*f*f*(f*(f - 2.0) + 1.0);
+  ivec2 ii = ivec2(i);
+  float a = h2f(ii), b = h2f(ii + ivec2(1,0)), c = h2f(ii + ivec2(0,1)), d = h2f(ii + ivec2(1,1));
+  float k1 = b - a, k2 = c - a, k4 = a - b - c + d;
+  return vec3(a + k1*u.x + k2*u.y + k4*u.x*u.y, du*(vec2(k1, k2) + k4*u.yx));
+}
+vec3 fbmd(vec2 p){
+  vec3 acc = vec3(0.0);
+  float w = 0.5;
+  mat2 m = mat2(1.0);
+  for(int i = 0; i < 3; i++){
+    vec3 n = vnoised(p);
+    acc.x  += w*n.x;
+    acc.yz += w*(n.yz*m);
+    p = 2.03*(FR*p) + vec2(17.3, 9.1);
+    m = 2.03*FR*m;
+    w *= 0.5;
+  }
+  return acc*(1.0/0.875);
+}
+
+// asymmetric dune profile: long gentle windward slope, sharp crest, steep slip face
+float prof(float u, float c){
+  if(u < c){ float s = u/c; return s*s*(2.0 - s); }
+  float t = (1.0 - u)/(1.0 - c); return t*t*(2.0 - t);
+}
+
+// primary transverse dune phase (domain warped), value + gradient
+vec3 phase1(vec2 p){
+  vec3 w = fbmd(p*(1.0/420.0) + vec2(3.1, 7.7));      w.yz *= (1.0/420.0);
+  vec3 v = vnoised(p*(1.0/115.0) + vec2(11.0, -4.0)); v.yz *= (1.0/115.0);
+  float wx = 100.0*(w.x - 0.5) + 26.0*(v.x - 0.5);
+  vec2  wg = 100.0*w.yz + 26.0*v.yz;
+  return vec3(p.x + 0.14*p.y + wx, vec2(1.0, 0.14) + wg)*(1.0/LAMBDA1);
+}
+
+struct Dune { vec3 ph1; vec3 a1; vec3 ph2; vec3 a2; vec3 b; };
+
+Dune duneFields(vec2 p){
+  Dune d;
+  d.ph1 = phase1(p);
+  vec3 a = fbmd(p*(1.0/1100.0) + vec2(-5.2, 1.3)); a.yz *= (1.0/1100.0);
+  d.a1 = vec3(4.0 + 44.0*a.x*a.x, 88.0*a.x*a.yz);
+  vec3 w2 = fbmd(p*(1.0/260.0) + vec2(-8.3, 2.9)); w2.yz *= (1.0/260.0);
+  d.ph2 = vec3(dot(p, D2) + 60.0*(w2.x - 0.5), D2 + 60.0*w2.yz)*(1.0/LAMBDA2);
+  vec3 a2 = vnoised(p*(1.0/520.0) + vec2(4.4, -6.6)); a2.yz *= (1.0/520.0);
+  d.a2 = vec3(1.0 + 6.0*a2.x, 6.0*a2.yz);
+  vec3 b = fbmd(p*(1.0/2400.0) + vec2(1.7, -3.3)); b.yz *= (1.0/2400.0);
+  d.b = vec3(110.0*(b.x - 0.5), 110.0*b.yz);
+  return d;
+}
+float duneH(Dune d){
+  return d.a1.x*prof(fract(d.ph1.x), C1) + d.a2.x*prof(fract(d.ph2.x), C2) + d.b.x;
+}
+
+// ---------- texture noise (visual only) ----------
+float tnoise(vec2 x){
+  vec2 p = floor(x); vec2 f = fract(x); f = f*f*(3.0 - 2.0*f);
+  return textureLod(uNoise, (p + f + 0.5)*(1.0/256.0), 0.0).b;
+}
+float tnoise3(vec3 x){
+  vec3 p = floor(x); vec3 f = fract(x); f = f*f*(3.0 - 2.0*f);
+  vec2 uv = (p.xy + vec2(37.0, 17.0)*p.z) + f.xy;
+  vec2 rg = textureLod(uNoise, (uv + 0.5)*(1.0/256.0), 0.0).rg;
+  return mix(rg.x, rg.y, f.z);
+}
+
+// ---------- atmosphere ----------
+vec3 dustColor(vec3 rd){
+  float sd = max(dot(rd, uSunDir), 0.0);
+  vec3 c = vec3(0.46, 0.18, 0.045)*(0.65 + 0.35*clamp(rd.y*0.8 + 0.5, 0.0, 1.0));
+  c += vec3(0.40, 0.15, 0.035)*(dot(rd, uSunDir)*0.5 + 0.5)*0.55;
+  c += vec3(0.90, 0.38, 0.10)*pow(sd, 3.0)*0.8;
+  return c*uDustBright;
+}
+vec3 hazeColor(vec3 rd){
+  vec3 L = uSunDir;
+  float sd = max(dot(rd, L), 0.0);
+  vec2 hz = normalize(rd.xz + vec2(1e-5));
+  float az = clamp(dot(hz, normalize(L.xz))*0.5 + 0.5, 0.0, 1.0);
+  vec3 c = mix(vec3(0.27, 0.25, 0.34), vec3(1.05, 0.52, 0.24), pow(az, 2.6));
+  c += vec3(1.0, 0.50, 0.20)*(pow(sd, 8.0)*0.55 + pow(sd, 48.0)*1.0);
+  return mix(c, dustColor(rd)*0.92, uMood);
+}
+float hazeOD(vec3 ro, vec3 rd, float t){
+  const float K = 1.0/350.0;
+  float a = uHaze*exp(-max(ro.y, -60.0)*K);
+  float b = rd.y*K;
+  if(abs(b) < 1e-7) return a*t;
+  return a*(1.0 - exp(clamp(-b*t, -60.0, 60.0)))/b;
+}
+
+// ---------- haboob wall ----------
+// cauliflower crown: sqrt() of smooth noise -> broad rounded heads, narrow cusps between them
+float wallTop(float z){
+  float t = uTime;
+  float h = 620.0 + 500.0*(tnoise(vec2(z*(1.0/2400.0), 3.1)) - 0.5);
+  float q = z*(1.0/520.0);
+  float b1 = sqrt(clamp(tnoise(vec2(q, 11.0 - t*0.04)), 0.0, 1.0));
+  float b2 = sqrt(clamp(tnoise(vec2(q*2.4 + 3.0, 16.3 - t*0.07)), 0.0, 1.0));
+  float b3 = tnoise(vec2(q*5.5, 21.7 - t*0.1));
+  return h + 400.0*b1 + 170.0*b2 + 50.0*b3;
+}
+// returns (front displacement along wind axis, billow value)
+vec2 wallDisp(float z, float y){
+  float t = uTime;
+  vec2 q = vec2(z, y)*(1.0/320.0);
+  q.y -= t*0.05;
+  vec2 w = vec2(tnoise(q*0.4 + vec2(0.0, t*0.02)), tnoise(q*0.4 + vec2(5.2, 1.3 - t*0.017)));
+  q += (w - 0.5)*0.6;
+  float b = 0.5*tnoise(q);
+  q = FR*q*2.1 + vec2(1.7, 9.2);
+  b += 0.28*tnoise(q);
+  q = FR*q*2.1 + vec2(4.1, 2.3);
+  b += 0.14*tnoise(q + vec2(0.0, -t*0.05));
+  q = FR*q*2.1 + vec2(7.3, 5.1);
+  b += 0.08*tnoise(q + vec2(0.0, -t*0.08));
+  b = smoothstep(0.18, 0.82, b);
+  float d = -300.0*b - 160.0*exp(-y*(1.0/220.0)) + 120.0*smoothstep(150.0, 1100.0, y);
+  return vec2(d, b);
+}
+vec3 wallShade(vec3 hp, vec3 n, float b, float H, vec3 rd){
+  vec3 L = uSunDir;
+  float ndl = dot(n, L);
+  float lit = clamp(ndl*0.5 + 0.5, 0.0, 1.0);
+  lit = lit*lit*(3.0 - 2.0*lit);
+  float hgt = clamp(hp.y/H, 0.0, 1.0);
+  float shade = mix(0.22, 1.0, smoothstep(0.0, 0.8, hgt));
+  float ao = mix(0.62, 1.0, b);
+  float sunI = length(uSunCol)*(1.0/7.3);
+  vec3 litC = vec3(1.0, 0.37, 0.09)*1.2*sunI;
+  vec3 darkC = vec3(0.16, 0.05, 0.014);
+  vec3 c = mix(darkC, litC, lit*shade)*ao;
+  float rim = smoothstep(H - 220.0, H + 40.0, hp.y);
+  c += vec3(1.0, 0.50, 0.20)*rim*(0.22*max(ndl + 0.4, 0.0)*sunI + pow(max(dot(rd, L), 0.0), 8.0)*1.2);
+  return c;
+}
+
+// storm volume: rgb = in-scattered colour, a = transmittance over [0, tMax]
+vec4 stormFx(vec3 ro, vec3 rd, float tMax, out float tEnter){
+  tEnter = 0.0;
+  float F = uWallS;
+  bool outside = ro.x > F;
+  float t0 = 0.0;
+  float t1 = tMax;
+  float H;
+  float soft = 1.0;
+  vec3 frontCol = vec3(0.0);
+  float frontMix = 0.0;
+  float dens = uStormDens;
+  vec3 sc = dustColor(rd);
+  if(outside){
+    if(rd.x > -0.01) return vec4(0.0, 0.0, 0.0, 1.0);
+    float t = (F - ro.x)/rd.x;
+    if(t + 520.0/rd.x > tMax) return vec4(0.0, 0.0, 0.0, 1.0);
+    vec2 wd = vec2(0.0);
+    for(int i = 0; i < 3; i++){
+      vec3 q = ro + rd*t;
+      wd = wallDisp(q.z, max(q.y, 0.0));
+      t = max((F - wd.x - ro.x)/rd.x, 0.0);
+    }
+    if(t > tMax) return vec4(0.0, 0.0, 0.0, 1.0);
+    vec3 hp = ro + rd*t;
+    H = wallTop(hp.z);
+    if(hp.y > H + 80.0) return vec4(0.0, 0.0, 0.0, 1.0);
+    t0 = t; tEnter = t;
+    soft = (1.0 - smoothstep(H - 280.0, H + 70.0, hp.y + 90.0*(tnoise(hp.zy*(1.0/70.0)) - 0.5)))*uWallVis;
+    float hy = max(hp.y, 0.0);
+    float gz = (wallDisp(hp.z + 40.0, hy).x - wd.x)*(1.0/40.0);
+    float gy = (wallDisp(hp.z, hy + 40.0).x - wd.x)*(1.0/40.0);
+    vec3 n = normalize(vec3(1.0, 0.6*gy + 2.2*smoothstep(H - 450.0, H + 40.0, hp.y), 0.6*gz));
+    frontCol = wallShade(hp, n, wd.y, H, rd);
+    frontMix = smoothstep(10.0, 320.0, t);
+    dens = uWallDens;
+  } else {
+    if(rd.x > 1e-4) t1 = min(t1, (F - ro.x)/rd.x);
+    H = wallTop(ro.z);
+  }
+  float turb = outside ? 1.0 - frontMix : 1.0;
+  if(turb > 0.01){
+    // wind-stretched dust billows rushing past the lens
+    vec3 adv = vec3(uWindTravel, 0.0, 0.0);
+    vec3 an = vec3(1.0/16.0, 1.0/5.0, 1.0/6.0);
+    vec3 o = ro + rd*t0;
+    float n1 = tnoise3((o + rd*min(tMax, 5.0) - adv)*an);
+    float n2 = tnoise3((o + rd*min(tMax, 14.0) - adv*0.95)*an*0.6 + 3.7);
+    float n3 = tnoise3((o + rd*min(tMax, 36.0) - adv*0.9)*an*0.3 + 7.1);
+    float nn = smoothstep(0.28, 0.72, n1*0.45 + n2*0.35 + n3*0.2);
+    dens *= mix(1.0, 0.35 + 1.3*nn, turb);
+    sc *= mix(1.0, (0.50 + 0.95*nn)*mix(0.95, 1.2, clamp(rd.y*1.4 + 0.5, 0.0, 1.0)), turb);
+  }
+  if(rd.y > 1e-4) t1 = min(t1, (H - ro.y)/rd.y + 60.0);
+  float len = max(t1 - t0, 0.0);
+  if(outside) len = min(len, 700.0);
+  float T = exp(-dens*len*soft);
+  if(outside) sc = mix(sc, frontCol, frontMix);
+  return vec4(sc, T);
+}
+
+vec3 atmos(vec3 col, vec3 rd, float t, float skyFlag, float extra){
+  vec3 ro = uCamPos;
+  vec3 hc = hazeColor(rd);
+  float od = hazeOD(ro, rd, t)*mix(1.0, 0.35, skyFlag);
+  float hz = max(1.0 - exp(-od), extra);
+  vec3 c = mix(col, hc, hz);
+  if(uStormDens > 1e-6){
+    float te;
+    vec4 s = stormFx(ro, rd, t, te);
+    if(s.a < 0.9999){
+      float hz2 = 1.0 - exp(-hazeOD(ro, rd, te)*0.2);
+      vec3 sc = mix(s.rgb, hc, hz2);
+      c = c*s.a + sc*(1.0 - s.a);
+    }
+  }
+  return c;
+}
+`;
+
+/* ---------------- SKY ---------------- */
+const SKY_VS = /* glsl */`
+varying vec2 vNdc;
+void main(){ vNdc = position.xy; gl_Position = vec4(position.xy, 0.0, 1.0); }
+`;
+const SKY_FS = /* glsl */`
+uniform mat4 uCamWorld;
+uniform mat4 uProjInv;
+varying vec2 vNdc;
+vec3 skyColor(vec3 rd){
+  vec3 L = uSunDir;
+  float y = rd.y;
+  float yy = max(y, 0.0);
+  vec3 hor = hazeColor(rd);
+  vec3 zen = vec3(0.018, 0.050, 0.17);
+  vec3 mid = vec3(0.10, 0.16, 0.34);
+  vec3 c = mix(hor, mid, smoothstep(0.0, 0.30, pow(yy, 0.75)));
+  c = mix(c, zen, smoothstep(0.18, 0.95, yy));
+  float sd = max(dot(rd, L), 0.0);
+  float clear = 1.0 - uMood;
+  c += vec3(1.0, 0.52, 0.22)*(pow(sd, 4.0)*0.35 + pow(sd, 32.0)*0.9 + pow(sd, 400.0)*5.0)*clear;
+  if(y > 0.0){
+    // high cirrus catching the last light
+    vec2 cuv = rd.xz/(y + 0.08);
+    cuv = vec2(cuv.x*0.6 + cuv.y*0.8, -cuv.x*0.8 + cuv.y*0.6) + vec2(uTime*0.004, 0.0);
+    float cl = tnoise(cuv*vec2(1.2, 5.8))*0.6 + tnoise(cuv*vec2(2.7, 11.0) + 7.0)*0.3 + tnoise(cuv*vec2(6.0, 22.0) + 3.0)*0.1;
+    cl = smoothstep(0.52, 0.86, cl)*smoothstep(0.02, 0.18, y)*(1.0 - smoothstep(0.55, 0.95, y));
+    vec3 cc = mix(vec3(0.95, 0.55, 0.52), vec3(2.3, 1.08, 0.48), pow(sd, 3.0))*(0.65 + 0.35*(1.0 - y));
+    c = mix(c, cc, cl*0.6*clear);
+  }
+  c = mix(c, dustColor(rd)*0.75, uMood*0.6);
+  float disk = smoothstep(0.99990, 0.99995, sd);
+  c += vec3(26.0, 15.0, 7.5)*disk*clear;
+  return c;
+}
+void main(){
+  vec4 v = uProjInv*vec4(vNdc, 1.0, 1.0);
+  vec3 dv = normalize(v.xyz/v.w);
+  vec3 rd = normalize(mat3(uCamWorld)*dv);
+  vec3 col = skyColor(rd);
+  col = atmos(col, rd, 1.0e6, 1.0, 0.0);
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+/* ---------------- TERRAIN (geometry clipmap, GPU displaced) ---------------- */
+const TERRAIN_VS = /* glsl */`
+uniform vec2 uOrigin;
+uniform float uSpacing;
+uniform float uExtent;
+varying vec3 vWorld;
+varying vec4 vA;
+varying vec4 vB;
+varying vec4 vC;
+varying vec3 vD;
+varying vec4 vQ;
+varying vec4 vQg;
+varying float vQb;
+#define SD 64.0
+void main(){
+  vec2 g = position.xz;
+  vec2 lp = g*uSpacing;
+  float d = max(abs(lp.x), abs(lp.y));
+  // geomorph odd vertices onto the coarser grid near the ring edge (no cracks, no pops)
+  float k = clamp((d - uExtent*0.6)/(uExtent*0.3), 0.0, 1.0);
+  vec2 wp = uOrigin + lp - mod(g, 2.0)*uSpacing*k;
+  Dune D = duneFields(wp);
+  // band-limit the crest kink to the local vertex spacing (shading stays razor sharp per pixel)
+  float s = uSpacing*(1.0 + k);
+  float w1 = 0.7*s*length(D.ph1.yz), w2 = 0.7*s*length(D.ph2.yz);
+  float f1 = fract(D.ph1.x), f2 = fract(D.ph2.x);
+  float pr1 = (prof(fract(f1 - w1), C1) + 2.0*prof(f1, C1) + prof(fract(f1 + w1), C1))*0.25;
+  float pr2 = (prof(fract(f2 - w2), C2) + 2.0*prof(f2, C2) + prof(fract(f2 + w2), C2))*0.25;
+  float h = D.a1.x*pr1 + D.a2.x*pr2 + D.b.x;
+  vWorld = vec3(wp.x, h, wp.y);
+  vA = vec4(D.ph1, D.a1.x);
+  vB = vec4(D.a1.yz, D.ph2.x, D.a2.x);
+  vC = vec4(D.ph2.yz, D.a2.yz);
+  vD = D.b;
+  // fields one shadow-length toward the sun: lets the fragment shader march cast shadows accurately
+  Dune Q = duneFields(wp + normalize(uSunDir.xz)*SD);
+  vQ = vec4(Q.ph1.x, Q.a1.x, Q.ph2.x, Q.a2.x);
+  vQg = vec4(Q.ph1.yz, Q.ph2.yz);
+  vQb = Q.b.x;
+  gl_Position = projectionMatrix*viewMatrix*vec4(vWorld, 1.0);
+}
+`;
+const TERRAIN_FS = /* glsl */`
+uniform vec2 uInnerC;
+uniform float uInnerHalf;
+varying vec3 vWorld;
+varying vec4 vA;
+varying vec4 vB;
+varying vec4 vC;
+varying vec3 vD;
+varying vec4 vQ;
+varying vec4 vQg;
+varying float vQb;
+#define SD 64.0
+
+// profile + derivative, crest anti-aliased over w (phase units)
+vec2 profD(float ph, float c, float w){
+  float u = fract(ph);
+  float s = clamp(u/c, 0.0, 1.0);
+  float t = clamp((1.0 - u)/(1.0 - c), 0.0, 1.0);
+  float vw = s*s*(2.0 - s), dw = (4.0*s - 3.0*s*s)/c;
+  float vl = t*t*(2.0 - t), dl = -(4.0*t - 3.0*t*t)/(1.0 - c);
+  float k = smoothstep(c - w, c + w, u);
+  return vec2(mix(vw, vl, k), mix(dw, dl, k));
+}
+// soft cast shadows: march toward the sun. Dune phases are Hermite-interpolated between this
+// pixel and a second field sample SD metres sunward, then extrapolated beyond it.
+float shadowMarch(float h0){
+  vec2 Ln = normalize(uSunDir.xz);
+  float tanE = uSunDir.y/length(uSunDir.xz);
+  float g1P = dot(vA.yz, Ln)*SD, g1Q = dot(vQg.xy, Ln)*SD;
+  float g2P = dot(vC.xy, Ln)*SD, g2Q = dot(vQg.zw, Ln)*SD;
+  float res = 1.0;
+  float d = 2.0;
+  for(int i = 0; i < 14; i++){
+    float ph1, ph2, a1, a2, b;
+    if(d <= SD){
+      float x = d/SD, x2 = x*x, x3 = x2*x;
+      float h00 = 2.0*x3 - 3.0*x2 + 1.0, h10 = x3 - 2.0*x2 + x, h01 = -2.0*x3 + 3.0*x2, h11 = x3 - x2;
+      ph1 = h00*vA.x + h10*g1P + h01*vQ.x + h11*g1Q;
+      ph2 = h00*vB.z + h10*g2P + h01*vQ.z + h11*g2Q;
+      a1 = mix(vA.w, vQ.y, x); a2 = mix(vB.w, vQ.w, x); b = mix(vD.x, vQb, x);
+    } else {
+      vec2 dp = Ln*(d - SD);
+      ph1 = vQ.x + dot(vQg.xy, dp); ph2 = vQ.z + dot(vQg.zw, dp);
+      a1 = vQ.y + dot(vB.xy, dp); a2 = vQ.w + dot(vC.zw, dp); b = vQb + dot(vD.yz, dp);
+    }
+    float hs = max(a1, 0.0)*prof(fract(ph1), C1) + max(a2, 0.0)*prof(fract(ph2), C2) + b;
+    float ry = h0 + tanE*d + 0.25;
+    res = min(res, 5.0*(ry - hs)/d);
+    if(res < 0.0) break;
+    d *= 1.45;
+  }
+  return clamp(res, 0.0, 1.0);
+}
+void main(){
+  vec3 P = vWorld;
+  // all screen-space derivatives before any discard / branch
+  float fw1 = fwidth(vA.x);
+  float fw2 = fwidth(vB.z);
+  float rph = (P.x*0.97 + P.z*0.24 + 3.0*tnoise(P.xz*0.05) + 9.0*tnoise(P.xz*0.011 + 3.0))*(1.0/1.5);
+  float rfw = fwidth(rph);
+  vec2 sp = vec2((P.x - uWindTravel*0.6)*(1.0/14.0), P.z*(1.0/1.6));
+  float sfw = fwidth(sp.y);
+#ifdef RING
+  vec2 dq = abs(P.xz - uInnerC);
+  if(max(dq.x, dq.y) < uInnerHalf) discard;
+#endif
+  vec3 toP = P - uCamPos;
+  float dist = length(toP);
+  vec3 rd = toP/dist;
+
+  vec2 p1 = profD(vA.x, C1, max(fw1*0.7, 0.002));
+  vec2 p2 = profD(vB.z, C2, max(fw2*0.7, 0.004));
+  float f1 = 1.0 - smoothstep(0.35, 0.9, fw1);
+  float f2 = 1.0 - smoothstep(0.35, 0.9, fw2);
+  vec2 g = vA.w*p1.y*vA.yz*f1 + p1.x*vB.xy + vB.w*p2.y*vC.xy*f2 + p2.x*vC.zw + vD.yz;
+  float hP = vA.w*p1.x + vB.w*p2.x + vD.x;
+  float steep = length(g);
+
+  // wind ripples near the camera
+  float near = 1.0 - smoothstep(35.0, 120.0, dist);
+  float ra = near*clamp(1.0 - rfw*2.5, 0.0, 1.0)*(1.0 - smoothstep(0.22, 0.5, steep));
+  ra *= smoothstep(0.35, 0.65, tnoise(P.xz*0.02 + 9.0));
+  float slope = (cos(6.2831853*rph) + 0.35*cos(12.566371*rph))*0.03;
+  g += vec2(0.97, 0.24)*slope*ra;
+
+  vec3 N = normalize(vec3(-g.x, 1.0, -g.y));
+  vec3 L = uSunDir;
+  float ndl = dot(N, L);
+  float sh = 1.0;
+  if(ndl > 0.0 && dist < 3200.0){
+    float sw = f1*(1.0 - smoothstep(2200.0, 3200.0, dist));
+    if(sw > 0.01) sh = mix(1.0, shadowMarch(hP), sw);
+  }
+  float diffW = clamp((ndl + 0.05)/1.05, 0.0, 1.0);
+  float sunTerm = diffW*sh;
+
+  // sand albedo: large-scale hue drift, darker coarse sand in the troughs
+  float n1 = tnoise(P.xz*0.004);
+  vec3 alb = mix(vec3(0.66, 0.29, 0.10), vec3(0.76, 0.38, 0.15), n1);
+  float crest = p1.x;
+  alb *= mix(0.84, 1.05, crest);
+  alb = mix(alb, vec3(0.52, 0.25, 0.11), (1.0 - smoothstep(0.0, 0.5, crest))*0.22*(1.0 - n1));
+
+  vec3 V = -rd;
+  vec3 col = alb*(uSunCol*sunTerm + uSkyAmb*(0.55 + 0.45*N.y) + uBounce*(1.25 - N.y));
+  // opposition surge (sand is retro-reflective)
+  col += alb*uSunCol*pow(max(dot(V, L), 0.0), 6.0)*0.22*sunTerm;
+  // forward-scatter sheen on grazing crests when looking into the sun
+  float fres = pow(1.0 - max(dot(N, V), 0.0), 5.0);
+  col += uSunCol*0.16*fres*pow(max(dot(rd, L), 0.0), 4.0)*sunTerm;
+
+  // grain glints
+  if(dist < 90.0){
+    vec2 cell = floor(P.xz*6.0);
+    float hs = float(ihash(uvec2(ivec2(cell) + 32768)))*2.3283064365386963e-10;
+    vec3 Hh = normalize(L + V);
+    float spec = pow(max(dot(N, Hh), 0.0), 18.0);
+    col += uSunCol*step(0.9965, hs)*spec*2.5*sunTerm*(1.0 - smoothstep(30.0, 90.0, dist));
+  }
+
+  // sand snakes streaming downwind at higher wind
+  float wf = smoothstep(7.0, 24.0, uWind);
+  if(wf > 0.0){
+    float n = tnoise(sp)*0.65 + tnoise(sp*vec2(2.3, 2.1) + 4.1)*0.35;
+    float snake = smoothstep(0.58, 0.85, n)*wf*clamp(1.0 - sfw*2.0, 0.0, 1.0)*(1.0 - smoothstep(0.3, 0.6, steep))
+                * (1.0 - smoothstep(60.0, 160.0, dist));
+    col = mix(col, col*1.3 + alb*uSunCol*0.03, snake*0.5);
+    col += dustColor(rd)*snake*0.6*uMood;
+  }
+
+  float edge = smoothstep(5200.0, 7800.0, length(P.xz - uCamPos.xz));
+  col = atmos(col, rd, dist, 0.0, edge);
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+/* ---------------- CREST SPINDRIFT (GPU particles) ---------------- */
+const SAND_VS = /* glsl */`
+attribute vec4 aSeed;
+uniform vec2 uBoxC;
+uniform float uBox;
+uniform float uPxScale;
+uniform float uAspect;
+varying vec4 vCol;
+varying vec2 vDir;
+vec2 rnd2(float id, float c){
+  uint h  = ihash(uvec2(uint(id), uint(c) + 1013u));
+  uint h2 = ihash(uvec2(h, 7919u));
+  return vec2(float(h), float(h2))*2.3283064365386963e-10;
+}
+void main(){
+  vCol = vec4(0.0);
+  vDir = vec2(1.0, 0.0);
+  gl_PointSize = 1.0;
+  gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+  float emit = smoothstep(4.0, 28.0, uWind);
+  if(aSeed.w > emit) return;
+
+  float id = aSeed.x;
+  float life = mix(1.7, 3.4, aSeed.y);
+  float tt = uTime/life + aSeed.z*7.0;
+  float cyc = floor(tt);
+  float age = tt - cyc;
+
+  // world-anchored random spawn point inside a box that follows the camera
+  vec2 base = rnd2(id, cyc)*uBox;
+  vec2 p = base + uBox*floor((uBoxC - base)/uBox + 0.5);
+  // Newton-project onto the nearest primary dune crest
+  for(int i = 0; i < 2; i++){
+    vec3 ph = phase1(p);
+    float target = floor(ph.x - C1 + 0.5) + C1;
+    p += (target - ph.x)*ph.yz/max(dot(ph.yz, ph.yz), 1e-10);
+  }
+  Dune D = duneFields(p);
+  float hc = duneH(D);
+  float prom = smoothstep(7.0, 16.0, D.a1.x);
+  if(prom <= 0.0) return;
+
+  float T = age*life;
+  float rr = fract(aSeed.w*91.7 + aSeed.y*13.1);
+  float v = uWind*mix(0.38, 0.9, rr);
+  vec3 pos = vec3(p.x + v*T, hc, p.y);
+  float lift = (0.35 + uWind*0.17)*mix(0.35, 1.25, fract(rr*7.3));
+  pos.y += 0.25 + lift*sqrt(age)*(1.0 - 0.55*age);
+  float ph = id*0.731;
+  pos.z += sin(T*2.1 + ph)*0.35*T*(0.3 + uWind*0.03) + (aSeed.z - 0.5)*T*uWind*0.12;
+  pos.y += sin(T*3.3 + ph*1.7)*0.25*age*(1.0 + uWind*0.05);
+
+  // gust streamers along the crest (sampled at emission time -> coherent plumes)
+  float gst = tnoise(vec2(p.y*(1.0/38.0), (uTime - T)*0.55 + p.x*0.01));
+  float a = smoothstep(0.0, 0.1, age)*(1.0 - smoothstep(0.45, 1.0, age));
+  a *= prom*smoothstep(0.36, 0.74, gst + emit*0.12)*(0.25 + 0.75*emit);
+  vec2 rel = (pos.xz - uBoxC)/uBox;
+  a *= 1.0 - smoothstep(0.36, 0.49, max(abs(rel.x), abs(rel.y)));
+  if(a < 0.002) return;
+
+  vec4 mv = viewMatrix*vec4(pos, 1.0);
+  float z = -mv.z;
+  if(z < 1.0) return;
+  float size = mix(0.9, 2.2, rr)*(1.0 + 3.0*age)*(0.8 + uWind*0.02);
+  float px = size*uPxScale/z;
+  a *= 0.34/(1.0 + 2.0*age);
+  if(px < 1.6){ a *= (px/1.6)*(px/1.6); px = 1.6; }
+  px = min(px, 30.0);
+
+  vec3 toP = pos - uCamPos;
+  float dist = length(toP);
+  vec3 rd = toP/dist;
+  // bounded forward-scattering lobe: plumes glow when backlit without blowing out
+  float lobe = 0.35 + 1.3*pow(max(dot(rd, uSunDir), 0.0), 5.0);
+  vec3 c = vec3(0.86, 0.56, 0.32)*(uSunCol*lobe*0.55 + uSkyAmb*0.8);
+  a *= 0.3 + 0.7*smoothstep(30.0, 130.0, dist);
+  c = atmos(c, rd, dist, 0.0, 0.0);
+  vCol = vec4(c, a);
+  gl_PointSize = px;
+  vec4 c0 = projectionMatrix*mv;
+  vec4 c1 = projectionMatrix*(viewMatrix*vec4(pos + vec3(1.0, 0.0, 0.0), 1.0));
+  vec2 sd = (c1.xy/c1.w - c0.xy/c0.w)*vec2(uAspect, 1.0);
+  vDir = dot(sd, sd) > 1e-12 ? normalize(sd) : vec2(1.0, 0.0);
+  gl_Position = c0;
+}
+`;
+const SAND_FS = /* glsl */`
+varying vec4 vCol;
+varying vec2 vDir;
+void main(){
+  // soft streak stretched along the on-screen wind direction
+  vec2 q = gl_PointCoord*2.0 - 1.0;
+  q.y = -q.y;
+  float along = dot(q, vDir);
+  float across = dot(q, vec2(-vDir.y, vDir.x));
+  float d = along*along + across*across*6.0;
+  if(d > 1.0) discard;
+  float a = vCol.a*exp(-d*3.0)*(1.0 - d);
+  gl_FragColor = vec4(vCol.rgb*a, a);
+}
+`;
+
+/* ---------------- STORM STREAKS (motion-blurred grit past the lens) ---------------- */
+const STREAK_VS = /* glsl */`
+attribute vec4 aSeed;
+uniform float uStreak;
+uniform vec2 uRes;
+uniform float uPxScale;
+varying float vAl;
+varying vec2 vQ;
+varying vec3 vC;
+void main(){
+  vAl = 0.0; vQ = vec2(0.0); vC = vec3(0.0);
+  gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+  if(uStreak < 0.002) return;
+  vec3 box = vec3(70.0, 26.0, 64.0);
+  float sf = mix(0.7, 1.3, aSeed.w);
+  vec3 vel = vec3(max(uWind, 4.0)*sf, (aSeed.z - 0.5)*2.5, sin(aSeed.w*41.0)*2.0);
+  vec3 p = aSeed.xyz*box + vec3(uWindTravel*sf, 0.0, 0.0);
+  p.y += sin(uTime*1.1 + aSeed.x*37.0)*1.6;
+  p.z += sin(uTime*0.8 + aSeed.y*53.0)*2.4;
+  vec3 c = uCamPos + vec3(-14.0, 2.0, 0.0);
+  p = c + mod(p - c + box*0.5, box) - box*0.5;
+
+  float dist = length(p - uCamPos);
+  float a = uStreak*exp(-dist*uStormDens*0.4)*(0.55 + 0.6*aSeed.y);
+  vec4 c0 = projectionMatrix*viewMatrix*vec4(p, 1.0);
+  vec4 c1 = projectionMatrix*viewMatrix*vec4(p - vel*0.045, 1.0);
+  if(c0.w < 1.0 || c1.w < 1.0) return;
+  vec2 hr = uRes*0.5;
+  vec2 s0 = c0.xy/c0.w*hr;
+  vec2 s1 = c1.xy/c1.w*hr;
+  vec2 d = s1 - s0;
+  float len = length(d);
+  vec2 dir = len > 0.01 ? d/len : vec2(1.0, 0.0);
+  vec2 nrm = vec2(-dir.y, dir.x);
+  float wpx = (0.03 + 0.07*aSeed.z*aSeed.z*aSeed.z)*uPxScale/c0.w;
+  if(wpx < 0.9){ a *= wpx/0.9; wpx = 0.9; }
+  wpx = min(wpx, 6.0);
+  vec2 s = mix(s0 - dir*wpx, s1 + dir*wpx, position.x) + nrm*position.y*wpx;
+  float z = mix(c0.z/c0.w, c1.z/c1.w, position.x);
+  gl_Position = vec4(s/hr, z, 1.0);
+  vAl = a;
+  vQ = position.xy;
+  vec3 rd = normalize(p - uCamPos);
+  vC = dustColor(rd)*mix(0.55, 2.3, aSeed.w*aSeed.w) + uSunCol*0.06;
+}
+`;
+const STREAK_FS = /* glsl */`
+varying float vAl;
+varying vec2 vQ;
+varying vec3 vC;
+void main(){
+  float a = vAl*(1.0 - vQ.y*vQ.y)*mix(1.0, 0.12, vQ.x);
+  gl_FragColor = vec4(vC*a, a);
+}
+`;
+
+/* ---------------- POST (bloom, grade, ACES, vignette, grain) ---------------- */
+const POST_VS = /* glsl */`
+varying vec2 vUv;
+void main(){ vUv = position.xy*0.5 + 0.5; gl_Position = vec4(position.xy, 0.0, 1.0); }
+`;
+const POST_FS = /* glsl */`
+uniform sampler2D tScene;
+uniform vec2 uRes;
+uniform float uTime;
+uniform float uStormIn;
+uniform float uExposure;
+uniform float uFade;
+varying vec2 vUv;
+vec3 aces(vec3 x){
+  const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+  return clamp((x*(a*x + b))/(x*(c*x + d) + e), 0.0, 1.0);
+}
+float h12(vec2 p){
+  vec3 p3 = fract(vec3(p.xyx)*0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y)*p3.z);
+}
+void main(){
+  vec2 uv = vUv;
+  vec3 col = textureLod(tScene, uv, 0.0).rgb;
+  if(uStormIn > 0.01){
+    vec2 px = 1.6/uRes;
+    vec3 b = textureLod(tScene, uv + vec2( px.x,  px.y), 0.0).rgb
+           + textureLod(tScene, uv + vec2(-px.x,  px.y), 0.0).rgb
+           + textureLod(tScene, uv + vec2( px.x, -px.y), 0.0).rgb
+           + textureLod(tScene, uv + vec2(-px.x, -px.y), 0.0).rgb;
+    col = mix(col, b*0.25, 0.4*uStormIn);
+  }
+  vec3 bloom = max(textureLod(tScene, uv, 3.0).rgb - 0.9, 0.0)*0.30
+             + max(textureLod(tScene, uv, 4.5).rgb - 0.8, 0.0)*0.38
+             + max(textureLod(tScene, uv, 6.0).rgb - 0.7, 0.0)*0.48
+             + textureLod(tScene, uv, 7.5).rgb*0.02;
+  col += bloom*vec3(1.0, 0.82, 0.66);
+  col *= uExposure;
+  float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  col *= mix(vec3(0.90, 0.97, 1.10), vec3(1.06, 1.0, 0.92), smoothstep(0.03, 0.9, lum));
+  col = mix(col, vec3(1.0, 0.45, 0.15)*lum*1.4, 0.3*uStormIn);
+  vec3 ta = aces(col);
+  float l2 = max(dot(col, vec3(0.2126, 0.7152, 0.0722)), 1e-5);
+  vec3 tl = clamp(col*(aces(vec3(l2)).x/l2), 0.0, 1.0);
+  col = mix(ta, tl, 0.5);
+  vec2 q = uv - 0.5;
+  float vig = 1.0 - smoothstep(0.25, 0.95, length(q*vec2(1.0, 0.78))*1.25);
+  col *= mix(0.60 - 0.12*uStormIn, 1.0, vig);
+  col = pow(col, vec3(1.0/2.2));
+  float gr = h12(gl_FragCoord.xy + fract(uTime*7.31)*vec2(97.0, 61.0));
+  col += (gr - 0.5)*(0.026 + 0.03*uStormIn);
+  gl_FragColor = vec4(col*uFade, 1.0);
+}
+`;
+
+/* =====================================================================
+   RENDERER / TARGETS
+   ===================================================================== */
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, stencil: false, powerPreference: 'high-performance' });
+} catch (e) {
+  fail('WebGL 2 is not available in this browser, so the scene cannot run.');
+  throw e;
+}
+renderer.toneMapping = THREE.NoToneMapping;
+document.body.prepend(renderer.domElement);
+
+const maxScale = Math.min(window.devicePixelRatio || 1, 1.5);
+let renderScale = maxScale;
+
+const rt = new THREE.WebGLRenderTarget(4, 4, {
+  type: THREE.HalfFloatType,
+  format: THREE.RGBAFormat,
+  minFilter: THREE.LinearMipmapLinearFilter,
+  magFilter: THREE.LinearFilter,
+  generateMipmaps: true,
+  depthBuffer: true,
+  stencilBuffer: false,
+  samples: 4,
+});
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 1.0, 30000);
+camera.rotation.order = 'YXZ';
+
+const noiseTex = makeNoiseTexture();
+const U = {
+  uTime: { value: 0 },
+  uCamPos: { value: new THREE.Vector3() },
+  uSunDir: { value: SUN.clone() },
+  uSunCol: { value: new THREE.Vector3() },
+  uSkyAmb: { value: new THREE.Vector3() },
+  uBounce: { value: new THREE.Vector3() },
+  uWind: { value: 0 },
+  uWindTravel: { value: 0 },
+  uHaze: { value: 0.0004 },
+  uStormDens: { value: 0 },
+  uWallS: { value: -1e7 },
+  uWallVis: { value: 0 },
+  uMood: { value: 0 },
+  uDustBright: { value: 1 },
+  uWallDens: { value: 0.006 },
+  uNoise: { value: noiseTex },
+};
+const BIG_SPHERE = new THREE.Sphere(new THREE.Vector3(), 1e7);
+
+/* ---------- sky ---------- */
+const triGeo = new THREE.BufferGeometry();
+triGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), 3));
+triGeo.boundingSphere = BIG_SPHERE;
+const skyMat = new THREE.ShaderMaterial({
+  uniforms: { ...U, uCamWorld: { value: camera.matrixWorld }, uProjInv: { value: camera.projectionMatrixInverse } },
+  vertexShader: SKY_VS,
+  fragmentShader: GLSL_COMMON + SKY_FS,
+  depthTest: false,
+  depthWrite: false,
+});
+const sky = new THREE.Mesh(triGeo, skyMat);
+sky.frustumCulled = false;
+sky.renderOrder = -1000;
+scene.add(sky);
+
+/* ---------- terrain clipmap ---------- */
+function buildGrid(ring) {
+  const n = N_GRID, h = n / 2;
+  const pos = new Float32Array((n + 1) * (n + 1) * 3);
+  let k = 0;
+  for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) { pos[k++] = i - h; pos[k++] = 0; pos[k++] = j - h; }
+  const idx = [];
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    const ci = i - h, cj = j - h;
+    if (ring && ci >= -30 && ci < 30 && cj >= -30 && cj < 30) continue;
+    const a = j * (n + 1) + i, b = a + 1, c = a + n + 1, d = c + 1;
+    idx.push(a, c, b, b, c, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.boundingSphere = BIG_SPHERE;
+  return g;
+}
+const gridFull = buildGrid(false), gridRing = buildGrid(true);
+const levels = [];
+for (let L = 0; L < LEVELS; L++) {
+  const s = S0 * Math.pow(2, L);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      ...U,
+      uOrigin: { value: new THREE.Vector2() },
+      uSpacing: { value: s },
+      uExtent: { value: (N_GRID / 2) * s },
+      uInnerC: { value: new THREE.Vector2() },
+      uInnerHalf: { value: L > 0 ? 31 * s : 0 },
+    },
+    vertexShader: GLSL_COMMON + TERRAIN_VS,
+    fragmentShader: GLSL_COMMON + TERRAIN_FS,
+    defines: L > 0 ? { RING: 1 } : {},
+  });
+  const mesh = new THREE.Mesh(L > 0 ? gridRing : gridFull, mat);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = L;
+  scene.add(mesh);
+  levels.push({ s, mat });
+}
+
+/* ---------- spindrift particles ---------- */
+const sandGeo = new THREE.BufferGeometry();
+{
+  const seeds = new Float32Array(N_SAND * 4);
+  for (let i = 0; i < N_SAND; i++) {
+    seeds[i * 4] = i; seeds[i * 4 + 1] = Math.random(); seeds[i * 4 + 2] = Math.random(); seeds[i * 4 + 3] = Math.random();
+  }
+  sandGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N_SAND * 3), 3));
+  sandGeo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 4));
+  sandGeo.boundingSphere = BIG_SPHERE;
+}
+const sandMat = new THREE.ShaderMaterial({
+  uniforms: { ...U, uBoxC: { value: new THREE.Vector2() }, uBox: { value: 700 }, uPxScale: { value: 500 }, uAspect: { value: 1 } },
+  vertexShader: GLSL_COMMON + SAND_VS,
+  fragmentShader: SAND_FS,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.CustomBlending,
+  blendEquation: THREE.AddEquation,
+  blendSrc: THREE.OneFactor,
+  blendDst: THREE.OneMinusSrcAlphaFactor,
+});
+const sand = new THREE.Points(sandGeo, sandMat);
+sand.frustumCulled = false;
+sand.renderOrder = 10;
+scene.add(sand);
+
+/* ---------- storm streaks ---------- */
+const streakGeo = new THREE.InstancedBufferGeometry();
+streakGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, -1, 0, 1, -1, 0, 0, 1, 0, 1, 1, 0]), 3));
+streakGeo.setIndex([0, 1, 2, 2, 1, 3]);
+{
+  const s = new Float32Array(N_STREAK * 4);
+  for (let i = 0; i < s.length; i++) s[i] = Math.random();
+  streakGeo.setAttribute('aSeed', new THREE.InstancedBufferAttribute(s, 4));
+}
+streakGeo.instanceCount = N_STREAK;
+streakGeo.boundingSphere = BIG_SPHERE;
+const streakMat = new THREE.ShaderMaterial({
+  uniforms: { ...U, uStreak: { value: 0 }, uRes: { value: new THREE.Vector2(1, 1) }, uPxScale: sandMat.uniforms.uPxScale },
+  vertexShader: GLSL_COMMON + STREAK_VS,
+  fragmentShader: STREAK_FS,
+  transparent: true,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+  blending: THREE.CustomBlending,
+  blendEquation: THREE.AddEquation,
+  blendSrc: THREE.OneFactor,
+  blendDst: THREE.OneMinusSrcAlphaFactor,
+});
+const streaks = new THREE.Mesh(streakGeo, streakMat);
+streaks.frustumCulled = false;
+streaks.renderOrder = 11;
+scene.add(streaks);
+
+/* ---------- post ---------- */
+const postScene = new THREE.Scene();
+const postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const postMat = new THREE.ShaderMaterial({
+  uniforms: {
+    tScene: { value: rt.texture },
+    uRes: { value: new THREE.Vector2(1, 1) },
+    uTime: U.uTime,
+    uStormIn: { value: 0 },
+    uExposure: { value: 1.0 },
+    uFade: { value: 0 },
+  },
+  vertexShader: POST_VS,
+  fragmentShader: POST_FS,
+  depthTest: false,
+  depthWrite: false,
+});
+const post = new THREE.Mesh(triGeo, postMat);
+post.frustumCulled = false;
+postScene.add(post);
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setPixelRatio(renderScale);
+  renderer.setSize(w, h, false);
+  renderer.domElement.style.width = w + 'px';
+  renderer.domElement.style.height = h + 'px';
+  const bw = Math.max(2, Math.floor(w * renderScale)), bh = Math.max(2, Math.floor(h * renderScale));
+  rt.setSize(bw, bh);
+  postMat.uniforms.uRes.value.set(bw, bh);
+  streakMat.uniforms.uRes.value.set(bw, bh);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  sandMat.uniforms.uPxScale.value = (bh * 0.5) / Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
+  sandMat.uniforms.uAspect.value = w / h;
+}
+addEventListener('resize', resize);
+resize();
+
+/* =====================================================================
+   SIMULATION STATE
+   ===================================================================== */
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const wrapA = (a) => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
+const hash1 = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+const noise1 = (x) => { const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f); return (hash1(i) * (1 - u) + hash1(i + 1) * u) * 2 - 1; };
+
+let time = 0;
+let sliderWind = 9, windEff = 9, windNow = 9, windTravel = 0, gust01 = 0.5;
+
+const storm = {
+  state: 'clear', t: 0, m: 0, mood: 0, camBlend: 0, camTarget: 0, low: 0, impact: 0,
+  wallD: WALL_START, wallVis: 0, inside: false, F: -1e7,
+  cm: 0, cmood: 0, cvis: 0, clow: 0, cwind: 0, dens: 0,
+};
+
+function pathXZ(u) {
+  return [2600 * Math.sin(u) + 420 * Math.sin(3.1 * u + 1.0), 1900 * Math.sin(2 * u + 0.6) + 320 * Math.cos(1.7 * u)];
+}
+const cam = { u: 2.35, x: 0, z: 0, y: 60, yaw: 0, pitch: -0.08, roll: 0, init: false };
+
+function toggleStorm() {
+  const s = storm;
+  if (s.state === 'clear') {
+    s.state = 'incoming'; s.t = 0; s.inside = false;
+  } else if (s.state === 'incoming' || s.state === 'inside') {
+    s.state = 'clearing'; s.t = 0;
+    s.cm = s.m; s.cmood = s.mood; s.cvis = s.wallVis; s.clow = s.low; s.cwind = windEff;
+  }
+  updateStormButton();
+}
+
+function updateStorm(dt) {
+  const s = storm;
+  s.t += dt;
+  if (s.state === 'incoming') {
+    const x = Math.min(s.t / STORM_IN, 1);
+    s.wallD = WALL_START * Math.pow(1 - x, 1.25);
+    s.wallVis = smoothstep(0, 0.9, s.t);
+    s.m = 1;
+    s.mood = 0.55 * Math.pow(x, 1.2);
+    s.camTarget = 1;
+    s.low = 0.7 * smoothstep(0.3, 1, x);
+    s.F = cam.x - s.wallD;
+    if (x >= 1) { s.state = 'inside'; s.t = 0; s.inside = true; s.impact = 1; updateStormButton(); }
+  } else if (s.state === 'inside') {
+    s.m = 1; s.wallVis = 1; s.camTarget = 1;
+    s.mood = Math.min(1, 0.55 + 0.45 * smoothstep(0, 0.7, s.t));
+    s.low = Math.min(1, 0.7 + 0.3 * smoothstep(0, 1.5, s.t));
+  } else if (s.state === 'clearing') {
+    const k = 1 - smoothstep(0, STORM_CLEAR, s.t);
+    s.m = s.cm * k * k * k;
+    s.mood = s.cmood * k;
+    s.wallVis = s.cvis * k;
+    s.low = s.clow * k;
+    s.camTarget = 0;
+    if (s.t >= STORM_CLEAR) {
+      s.state = 'clear'; s.inside = false; s.m = 0; s.mood = 0; s.wallVis = 0; s.low = 0; s.F = -1e7; s.wallD = WALL_START;
+      updateStormButton();
+    }
+  }
+  if (s.inside) s.F = cam.x + 1e7;
+  const rate = s.camTarget > s.camBlend ? 1.4 : 0.55;
+  s.camBlend += (s.camTarget - s.camBlend) * (1 - Math.exp(-dt * rate));
+  s.impact *= Math.exp(-dt * 1.8);
+  s.dens = s.state === 'clear' ? 0 : RHO_STORM * s.m * (0.7 + 0.6 * gust01) * (1 + 2.5 * s.impact);
+}
+
+function updateWind(dt) {
+  gust01 = 0.5 + 0.5 * noise1(time * 0.32 + 5.0);
+  const sw = Math.max(sliderWind, 27);
+  let target = sliderWind;
+  if (storm.state === 'incoming') { const x = Math.min(storm.t / STORM_IN, 1); target = lerp(sliderWind, sw, x * x); }
+  else if (storm.state === 'inside') target = sw * (0.88 + 0.24 * gust01);
+  else if (storm.state === 'clearing') target = lerp(sliderWind, storm.cwind, 1 - smoothstep(0, STORM_CLEAR, storm.t));
+  windEff += (target - windEff) * (1 - Math.exp(-dt * 1.3));
+  windNow = Math.max(0, windEff * (1 + 0.06 * noise1(time * 0.6 + 11.0)));
+  windTravel += windNow * dt;
+}
+
+function updateCamera(dt) {
+  const sc = storm.camBlend;
+  const speed = lerp(15.5, 5.0, sc);
+  const a0 = pathXZ(cam.u), a1 = pathXZ(cam.u + 1e-3);
+  const dl = Math.hypot(a1[0] - a0[0], a1[1] - a0[1]) / 1e-3;
+  cam.u += speed * dt / dl;
+  const p = pathXZ(cam.u), pn = pathXZ(cam.u + 1e-3);
+  let tx = pn[0] - p[0], tz = pn[1] - p[1];
+  const tl = Math.hypot(tx, tz); tx /= tl; tz /= tl;
+  cam.x = p[0]; cam.z = p[1];
+
+  const pathYaw = Math.atan2(-tx, -tz);
+  const sway = 0.38 * Math.sin(time * 0.043) + 0.22 * Math.sin(time * 0.0171 + 1.3);
+  let target = pathYaw + sway;
+  const stormYaw = Math.PI / 2 + 0.10 * Math.sin(time * 0.07);
+  target += wrapA(stormYaw - target) * sc;
+  if (!cam.init) cam.yaw = target;
+  const dy = wrapA(target - cam.yaw) * (1 - Math.exp(-dt * 1.6));
+  cam.yaw = wrapA(cam.yaw + dy);
+  const yawRate = dy / Math.max(dt, 1e-3);
+  cam.roll += (clamp(-yawRate * 0.5, -0.07, 0.07) - cam.roll) * (1 - Math.exp(-dt * 1.5));
+
+  // altitude: keep clear of dunes ahead (look-ahead along travel and view direction)
+  const fx = -Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
+  let hmax = terrainH(cam.x, cam.z);
+  const look = 1 - 0.6 * storm.low;
+  for (const d of [18, 40, 70]) {
+    hmax = Math.max(hmax,
+      terrainH(cam.x + tx * d * look, cam.z + tz * d * look) - d * 0.05,
+      terrainH(cam.x + fx * d * look, cam.z + fz * d * look) - d * 0.12);
+  }
+  const clearance = lerp(26 + 9 * Math.sin(time * 0.031 + 0.7), 3.5, storm.low);
+  const ty = hmax + clearance;
+  if (!cam.init) cam.y = ty;
+  cam.y += (ty - cam.y) * (1 - Math.exp(-dt * lerp(0.8, 1.6, storm.low)));
+  cam.y = Math.max(cam.y, terrainH(cam.x, cam.z) + 3.0);
+
+  const basePitch = -0.085 + 0.035 * Math.sin(time * 0.051);
+  const stormPitch = storm.state === 'incoming' ? 0.035 : -0.17;
+  const pt = lerp(basePitch, stormPitch, sc);
+  if (!cam.init) cam.pitch = pt;
+  cam.pitch += (pt - cam.pitch) * (1 - Math.exp(-dt * 1.2));
+  cam.init = true;
+
+  // handheld/buffeting shake
+  const in01 = storm.inside ? storm.m : 0;
+  const amp = 0.0022 * in01 * (0.6 + 0.8 * gust01) + 0.022 * storm.impact + 0.00035 * (windNow / 30);
+  const sp = noise1(time * 9.0 + 1.0) * 0.7 + noise1(time * 23.0 + 7.0) * 0.3;
+  const sy = noise1(time * 8.0 + 31.0) * 0.7 + noise1(time * 21.0 + 3.0) * 0.3;
+  const sr = noise1(time * 7.0 + 57.0);
+  camera.position.set(cam.x, cam.y + sp * amp * 6.0, cam.z);
+  camera.rotation.set(cam.pitch + sp * amp, cam.yaw + sy * amp, cam.roll + sr * amp * 0.7);
+  camera.updateMatrixWorld();
+}
+
+const tmpV = new THREE.Vector3();
+function setV(v, a, b, t, scale = 1) { v.set(lerp(a[0], b[0], t) * scale, lerp(a[1], b[1], t) * scale, lerp(a[2], b[2], t) * scale); }
+
+function updateUniforms() {
+  const mood = storm.mood;
+  U.uTime.value = time;
+  U.uCamPos.value.copy(camera.position);
+  const dim = storm.inside ? mood : mood * mood;   // the sun keeps lighting the wall until it hits
+  setV(U.uSunCol.value, [1.0, 0.56, 0.27], [1.0, 0.47, 0.20], mood, lerp(6.2, 0.4, Math.pow(dim, 0.7)));
+  setV(U.uSkyAmb.value, [0.085, 0.12, 0.23], [0.26, 0.12, 0.04], mood);
+  setV(U.uBounce.value, [0.11, 0.055, 0.025], [0.10, 0.05, 0.02], mood);
+  U.uWind.value = windNow;
+  U.uWindTravel.value = windTravel;
+  U.uHaze.value = 0.00024 * (1 + 1.3 * windNow / 30);
+  U.uStormDens.value = storm.dens;
+  U.uWallS.value = storm.F;
+  U.uWallVis.value = storm.wallVis;
+  U.uMood.value = mood;
+  U.uDustBright.value = lerp(1.0, 0.85, storm.inside ? 1 : 0);
+  U.uWallDens.value = lerp(0.0055, 0.06, smoothstep(700, 0, storm.wallD));
+
+  for (let L = 0; L < LEVELS; L++) {
+    const s = levels[L].s, u = levels[L].mat.uniforms;
+    u.uOrigin.value.set(Math.round(cam.x / (2 * s)) * 2 * s, Math.round(cam.z / (2 * s)) * 2 * s);
+    if (L > 0) u.uInnerC.value.copy(levels[L - 1].mat.uniforms.uOrigin.value);
+  }
+  const fx = -Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
+  sandMat.uniforms.uBoxC.value.set(cam.x + fx * 230, cam.z + fz * 230);
+
+  // streaks fade in as the wall reaches the camera
+  let streak = 0;
+  if (storm.inside) streak = storm.m;
+  else if (storm.state === 'incoming') streak = smoothstep(220, 0, storm.wallD) * 0.8;
+  streakMat.uniforms.uStreak.value = streak;
+
+  postMat.uniforms.uStormIn.value = storm.inside ? storm.m * (0.6 + 0.4 * smoothstep(0, 1, storm.mood)) : 0;
+  postMat.uniforms.uExposure.value = lerp(1.0, 1.12, mood);
+}
+
+/* =====================================================================
+   HUD / UI
+   ===================================================================== */
+const el = {
+  wind: document.getElementById('wind'), wOut: document.getElementById('wOut'),
+  hWind: document.getElementById('hWind'), hVis: document.getElementById('hVis'), hFps: document.getElementById('hFps'),
+  storm: document.getElementById('storm'), sound: document.getElementById('sound'), fade: document.getElementById('fade'),
+};
+function onWind() {
+  sliderWind = parseFloat(el.wind.value);
+  el.wOut.textContent = sliderWind.toFixed(1) + ' m/s';
+  el.wind.style.setProperty('--p', (sliderWind / 30 * 100).toFixed(1) + '%');
+}
+el.wind.addEventListener('input', onWind);
+onWind();
+function updateStormButton() {
+  const b = el.storm;
+  b.classList.toggle('on', storm.state === 'incoming' || storm.state === 'inside');
+  b.classList.toggle('busy', storm.state === 'clearing');
+  b.textContent = storm.state === 'clear' ? 'SANDSTORM' : storm.state === 'clearing' ? 'CLEARING…' : 'CLEAR STORM';
+}
+el.storm.addEventListener('click', () => { toggleStorm(); el.storm.blur(); });
+addEventListener('keydown', (e) => { if (e.code === 'KeyH') document.body.classList.toggle('noui'); });
+
+function visibilityNow() {
+  const hazeAtCam = U.uHaze.value * Math.exp(-Math.max(cam.y, -60) / 350);
+  const vClear = 3.912 / hazeAtCam;
+  if (storm.dens <= 1e-7) return vClear;
+  const vStorm = 3.912 / (storm.dens + hazeAtCam);
+  if (storm.inside) return Math.min(vClear, vStorm);
+  if (storm.wallVis < 0.05) return vClear;
+  const vWall = 3.912 / (U.uWallDens.value * storm.m + hazeAtCam);
+  return Math.min(vClear, Math.max(cam.x - storm.F - 250, 0) + vWall);
+}
+function fmtVis(v) {
+  if (v < 100) return Math.round(v) + ' m';
+  if (v < 1000) return Math.round(v / 5) * 5 + ' m';
+  return (Math.round(v / 10) * 10).toLocaleString('en-US') + ' m';
+}
+
+/* ---------- optional procedural wind audio ---------- */
+const audio = { ctx: null, on: false, last: 0 };
+function audioInit() {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const sr = ctx.sampleRate, len = sr * 4;
+  const buf = ctx.createBuffer(1, len, sr);
+  const d = buf.getChannelData(0);
+  let b0 = 0, b1 = 0, b2 = 0;
+  for (let i = 0; i < len; i++) {
+    const w = Math.random() * 2 - 1;
+    b0 = 0.99765 * b0 + w * 0.0990460; b1 = 0.96300 * b1 + w * 0.2965164; b2 = 0.57000 * b2 + w * 1.0526913;
+    d[i] = (b0 + b1 + b2 + w * 0.1848) * 0.16;
+  }
+  const src = ctx.createBufferSource(); src.buffer = buf; src.loop = true;
+  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 500; bp.Q.value = 0.8;
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 2600;
+  const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 170;
+  const g1 = ctx.createGain(), g2 = ctx.createGain(), g3 = ctx.createGain(), master = ctx.createGain();
+  g1.gain.value = g2.gain.value = g3.gain.value = 0; master.gain.value = 0;
+  src.connect(bp); bp.connect(g1); g1.connect(master);
+  src.connect(hp); hp.connect(g2); g2.connect(master);
+  src.connect(lp); lp.connect(g3); g3.connect(master);
+  master.connect(ctx.destination);
+  src.start();
+  Object.assign(audio, { ctx, bp, g1, g2, g3, master });
+}
+function audioUpdate() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  if (t - audio.last < 0.08) return;
+  audio.last = t;
+  const w = windNow / 30, m = storm.mood;
+  audio.master.gain.setTargetAtTime(audio.on ? 0.85 : 0, t, 0.35);
+  audio.g1.gain.setTargetAtTime(0.04 + 0.55 * w * w * (0.75 + 0.5 * gust01), t, 0.25);
+  audio.bp.frequency.setTargetAtTime(260 + 900 * w + 220 * gust01, t, 0.4);
+  audio.g2.gain.setTargetAtTime(0.015 + 0.2 * w * w + 0.22 * m, t, 0.25);
+  audio.g3.gain.setTargetAtTime(0.02 + 1.3 * m * (0.7 + 0.5 * gust01), t, 0.3);
+}
+el.sound.addEventListener('click', () => {
+  try {
+    if (!audio.ctx) audioInit();
+    audio.on = !audio.on;
+    if (audio.ctx.state === 'suspended') audio.ctx.resume();
+    el.sound.classList.toggle('on', audio.on);
+    el.sound.textContent = audio.on ? 'SOUND ●' : 'SOUND';
+  } catch (e) { el.sound.textContent = 'NO AUDIO'; }
+  el.sound.blur();
+});
+
+/* =====================================================================
+   MAIN LOOP
+   ===================================================================== */
+function step(dt) {
+  time += dt;
+  updateWind(dt);
+  updateStorm(dt);
+  updateCamera(dt);
+  updateUniforms();
+}
+function renderFrame() {
+  renderer.setRenderTarget(rt);
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  renderer.render(postScene, postCam);
+}
+
+let last = performance.now(), frames = 0, fpsAcc = 0, fpsShown = 0, hudAcc = 0;
+let adaptAcc = 0, adaptFrames = 0, goodWindows = 0, started = 0, fadeT = 0;
+
+function loop(now) {
+  requestAnimationFrame(loop);
+  const rawDt = (now - last) / 1000;
+  last = now;
+  const dt = Math.min(Math.max(rawDt, 0), 0.1);
+  step(dt);
+  renderFrame();
+  audioUpdate();
+
+  // fade in from black after the first frames (shader compilation hitch hidden)
+  started++;
+  if (started > 3) fadeT = Math.min(1, fadeT + dt / 2.5);
+  postMat.uniforms.uFade.value = fadeT * fadeT * (3 - 2 * fadeT);
+  if (started === 4) el.fade.style.opacity = '0';
+
+  // FPS
+  frames++; fpsAcc += rawDt;
+  if (fpsAcc >= 0.5) { fpsShown = frames / fpsAcc; frames = 0; fpsAcc = 0; }
+  // adaptive resolution to hold ~60 fps
+  if (started > 90) {
+    adaptAcc += rawDt; adaptFrames++;
+    if (adaptAcc >= 1.5) {
+      const f = adaptFrames / adaptAcc;
+      if (f < 50 && renderScale > 0.5) { renderScale = Math.max(0.5, renderScale * 0.85); resize(); goodWindows = 0; }
+      else if (f > 58.5) { if (++goodWindows >= 3 && renderScale < maxScale) { renderScale = Math.min(maxScale, renderScale * 1.08); resize(); goodWindows = 0; } }
+      else goodWindows = 0;
+      adaptAcc = 0; adaptFrames = 0;
+    }
+  }
+  hudAcc += rawDt;
+  if (hudAcc > 0.2) {
+    hudAcc = 0;
+    el.hWind.textContent = windNow.toFixed(1) + ' m/s';
+    const v = visibilityNow();
+    el.hVis.textContent = fmtVis(v);
+    el.hVis.classList.toggle('alert', v < 1000);
+    el.hWind.classList.toggle('alert', windNow > 20);
+    el.hFps.textContent = fpsShown ? Math.round(fpsShown).toString() : '—';
+  }
+}
+
+try {
+  step(1 / 60);
+  renderer.compile(scene, camera);
+  requestAnimationFrame((t) => { last = t; loop(t); });
+} catch (e) {
+  console.error(e);
+  fail('Something went wrong while starting the scene: ' + (e && e.message ? e.message : e));
+}
+</script>
+</body>
+</html>

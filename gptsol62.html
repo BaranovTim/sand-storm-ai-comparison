@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Procedural Desert – Golden Hour & Sandstorm</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:ui-monospace,Menlo,Consolas,monospace;color:#f3e2c8}
+  canvas{display:block}
+  #vig{position:fixed;inset:0;pointer-events:none;
+    background:radial-gradient(ellipse at center,rgba(0,0,0,0) 55%,rgba(20,8,0,.55) 100%);}
+  .bar{position:fixed;left:0;right:0;height:5vh;background:#000;pointer-events:none}
+  #top{top:0}#bot{bottom:0}
+  #hud{position:fixed;top:calc(5vh + 14px);right:16px;padding:10px 14px;background:rgba(20,10,4,.45);
+    border:1px solid rgba(255,200,140,.25);border-radius:6px;font-size:12px;letter-spacing:.12em;line-height:1.7;
+    backdrop-filter:blur(4px);min-width:170px}
+  #hud b{float:right;font-weight:600;color:#ffd9a8;margin-left:16px}
+  #ctl{position:fixed;left:16px;bottom:calc(5vh + 14px);padding:12px 14px;background:rgba(20,10,4,.45);
+    border:1px solid rgba(255,200,140,.25);border-radius:6px;font-size:12px;letter-spacing:.12em;backdrop-filter:blur(4px);
+    display:flex;gap:16px;align-items:center}
+  input[type=range]{width:200px;accent-color:#e8893a;vertical-align:middle}
+  button{font:inherit;letter-spacing:.18em;padding:8px 16px;border-radius:4px;cursor:pointer;
+    background:rgba(232,137,58,.18);color:#ffd9a8;border:1px solid #e8893a;transition:.2s}
+  button:hover{background:rgba(232,137,58,.4)}
+  button.on{background:#e8893a;color:#2a1204}
+</style>
+</head>
+<body>
+<div id="vig"></div><div class="bar" id="top"></div><div class="bar" id="bot"></div>
+<div id="hud">
+  WIND <b id="hw">0.0 m/s</b><br>
+  VISIBILITY <b id="hv">0 m</b><br>
+  FPS <b id="hf">0</b>
+</div>
+<div id="ctl">
+  <label>WIND <input id="wind" type="range" min="0" max="30" step="0.1" value="8"> <span id="wv">8.0</span> m/s</label>
+  <button id="storm">SANDSTORM</button>
+</div>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js';
+
+/* ---------------- shared GLSL ---------------- */
+const COMMON = `
+uniform vec3 uSun; uniform vec3 uSunCol; uniform vec3 uAmb;
+uniform float uSkyStorm; uniform float uExposure; uniform float uTime; uniform float uFogD;
+float hash(vec2 p){vec3 p3=fract(vec3(p.xyx)*.1031);p3+=dot(p3,p3.yzx+33.33);return fract((p3.x+p3.y)*p3.z);}
+float vnoise(vec2 p){vec2 i=floor(p);vec2 f=fract(p);vec2 u=f*f*(3.-2.*f);
+  return mix(mix(hash(i),hash(i+vec2(1.,0.)),u.x),mix(hash(i+vec2(0.,1.)),hash(i+vec2(1.,1.)),u.x),u.y);}
+float fbm(vec2 p){float s=0.,a=.5;for(int i=0;i<5;i++){s+=a*vnoise(p);p=p*2.03+vec2(17.1,9.3);a*=.5;}return s;}
+float duneH(vec2 p){
+  vec2 q=p*.0025;
+  float w=vnoise(q*.5)*2.;
+  float n1=vnoise(vec2(q.x*2.2,q.y+w));
+  float r1=1.-abs(n1*2.-1.);r1*=r1;
+  float n2=vnoise(vec2(q.x*4.1+1.3,q.y*2.3-w*.7+5.2));
+  float r2=1.-abs(n2*2.-1.);r2*=r2;
+  float b=vnoise(q*.3+11.);
+  return r1*55.+r2*16.+b*45.+vnoise(p*.02)*2.;
+}
+vec3 aces(vec3 x){return clamp((x*(2.51*x+.03))/(x*(2.43*x+.59)+.14),0.,1.);}
+vec3 outCol(vec3 c){return pow(aces(c*uExposure),vec3(1./2.2));}
+vec3 skyCol(vec3 d){
+  float y=max(d.y,0.);
+  float sd=max(dot(d,uSun),0.);
+  vec3 zen=vec3(.10,.20,.42), hor=vec3(1.05,.60,.34);
+  vec3 c=mix(hor,zen,pow(y,.5));
+  c=mix(c,vec3(1.1,.45,.25),(1.-pow(y,.3))*.3);
+  c+=vec3(1.,.5,.2)*pow(sd,5.)*.7+vec3(1.,.75,.45)*pow(sd,80.)*2.;
+  vec3 sc=vec3(.60,.32,.14)*(.7+.6*pow(sd,6.));
+  return mix(c,sc,uSkyStorm);
+}
+`;
+
+/* ---------------- JS mirror of the dune function ---------------- */
+const fract = x => x - Math.floor(x);
+function hash(x, y) {
+  let a = fract(x * .1031), b = fract(y * .1031), c = fract(x * .1031);
+  const d = a * (b + 33.33) + b * (c + 33.33) + c * (a + 33.33);
+  a += d; b += d; c += d;
+  return fract((a + b) * c);
+}
+function vn(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  const a = hash(ix, iy), b = hash(ix + 1, iy), c = hash(ix, iy + 1), d = hash(ix + 1, iy + 1);
+  return (a + (b - a) * ux) * (1 - uy) + (c + (d - c) * ux) * uy;
+}
+let lastR1 = 0;
+function duneH(x, y) {
+  const qx = x * .0025, qy = y * .0025;
+  const w = vn(qx * .5, qy * .5) * 2;
+  const n1 = vn(qx * 2.2, qy + w);
+  let r1 = 1 - Math.abs(n1 * 2 - 1); r1 *= r1;
+  const n2 = vn(qx * 4.1 + 1.3, qy * 2.3 - w * .7 + 5.2);
+  let r2 = 1 - Math.abs(n2 * 2 - 1); r2 *= r2;
+  const b = vn(qx * .3 + 11, qy * .3 + 11);
+  lastR1 = r1;
+  return r1 * 55 + r2 * 16 + b * 45 + vn(x * .02, y * .02) * 2;
+}
+
+/* ---------------- renderer / scene ---------------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+const PR = Math.min(devicePixelRatio, 1.5);
+renderer.setPixelRatio(PR);
+renderer.setSize(innerWidth, innerHeight);
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.5, 9000);
+
+const sunDir = new THREE.Vector3(0.85, 0.105, -0.42).normalize();
+const windDir = new THREE.Vector3(-1, 0, 0.25).normalize();   // wind blows towards the camera
+const U = {
+  uSun: { value: sunDir }, uSunCol: { value: new THREE.Color() }, uAmb: { value: new THREE.Color() },
+  uSkyStorm: { value: 0 }, uExposure: { value: 1 }, uTime: { value: 0 }, uFogD: { value: 0.00055 },
+};
+
+/* ---------------- sky ---------------- */
+const sky = new THREE.Mesh(new THREE.SphereGeometry(5000, 48, 24), new THREE.ShaderMaterial({
+  uniforms: U, side: THREE.BackSide, depthWrite: false, depthTest: false,
+  vertexShader: `varying vec3 vD; void main(){ vD=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+  fragmentShader: COMMON + `varying vec3 vD;
+    void main(){ vec3 d=normalize(vD); vec3 c=skyCol(d);
+      float sd=max(dot(d,uSun),0.);
+      c+=vec3(30.,19.,9.)*smoothstep(.9994,.9997,sd)*(1.-uSkyStorm*.93);
+      c+=vec3(.02)*(hash(gl_FragCoord.xy)-.5);
+      gl_FragColor=vec4(outCol(c),1.);}`
+}));
+sky.renderOrder = -10;
+scene.add(sky);
+
+/* ---------------- terrain ---------------- */
+const TS = 6000, TN = 360, CELL = TS / TN;
+const tGeo = new THREE.PlaneGeometry(TS, TS, TN, TN); tGeo.rotateX(-Math.PI / 2);
+const terrain = new THREE.Mesh(tGeo, new THREE.ShaderMaterial({
+  uniforms: U,
+  vertexShader: COMMON + `varying vec3 vW;
+    void main(){ vec4 w=modelMatrix*vec4(position,1.); w.y=duneH(w.xz); vW=w.xyz;
+      gl_Position=projectionMatrix*viewMatrix*w; }`,
+  fragmentShader: COMMON + `varying vec3 vW;
+    void main(){
+      vec2 p=vW.xz; float e=1.5;
+      float h=duneH(p), hx=duneH(p+vec2(e,0.)), hz=duneH(p+vec2(0.,e));
+      vec3 n=normalize(vec3(h-hx,e,h-hz));
+      vec3 V=cameraPosition-vW; float dist=length(V); V/=dist;
+      float fade=exp(-dist*.006);
+      float rp=sin(dot(p,vec2(.97,.24))*1.7+vnoise(p*.07)*9.);
+      n=normalize(n+vec3(.97,0.,.24)*rp*.12*fade*smoothstep(.75,.95,n.y));
+      vec3 alb=mix(vec3(.72,.42,.24),vec3(.95,.70,.46),smoothstep(10.,100.,h))*(.85+.3*vnoise(p*.013));
+      float ndl=dot(n,uSun);
+      float diff=smoothstep(-.05,.55,ndl);
+      vec3 lit=uSunCol*diff+uAmb*(.55+.45*n.y)+vec3(.35,.17,.08)*.35*(1.-n.y);
+      vec3 c=alb*lit;
+      float g=hash(floor(p*6.));
+      c+=uSunCol*step(.997,g)*diff*fade*1.5*(1.-uSkyStorm);
+      float f=1.-exp(-pow(dist*uFogD,2.));
+      vec3 fc=skyCol(normalize(vec3(-V.x,.03,-V.z)));
+      c=mix(c,fc,f);
+      gl_FragColor=vec4(outCol(c),1.);
+    }`
+}));
+terrain.frustumCulled = false;
+scene.add(terrain);
+
+/* ---------------- crest sand particles (CPU) ---------------- */
+const CN = 9000;
+const cPos = new Float32Array(CN * 3), cA = new Float32Array(CN), cVel = new Float32Array(CN * 3),
+      cLife = new Float32Array(CN), cMax = new Float32Array(CN).fill(1);
+const cGeo = new THREE.BufferGeometry();
+cGeo.setAttribute('position', new THREE.BufferAttribute(cPos, 3).setUsage(THREE.DynamicDrawUsage));
+cGeo.setAttribute('aA', new THREE.BufferAttribute(cA, 1).setUsage(THREE.DynamicDrawUsage));
+const PU = { uScale: { value: 500 }, uFogCol: { value: new THREE.Color() }, uOpacity: { value: 0 },
+             uCam: { value: new THREE.Vector3() }, uOff: { value: new THREE.Vector3() } };
+const crest = new THREE.Points(cGeo, new THREE.ShaderMaterial({
+  uniforms: { ...U, ...PU }, transparent: true, depthWrite: false,
+  vertexShader: COMMON + `uniform float uScale; attribute float aA; varying float vA; varying float vD;
+    void main(){ vec4 mv=modelViewMatrix*vec4(position,1.); vD=-mv.z;
+      float s=.9*uScale/max(vD,.1); gl_PointSize=clamp(s,1.,24.); vA=aA*min(1.,s);
+      gl_Position=projectionMatrix*mv; }`,
+  fragmentShader: COMMON + `uniform vec3 uFogCol; varying float vA; varying float vD;
+    void main(){ float r=length(gl_PointCoord-.5); if(r>.5) discard;
+      float a=vA*smoothstep(.5,.1,r);
+      vec3 c=vec3(.95,.68,.42)*(uSunCol*.5+uAmb);
+      float f=1.-exp(-pow(vD*uFogD,2.)); c=mix(c,uFogCol,f);
+      gl_FragColor=vec4(outCol(c),a*(1.-f*.6)); }`
+}));
+crest.frustumCulled = false;
+scene.add(crest);
+
+/* ---------------- storm particles (GPU wrap) ---------------- */
+const SN = 16000, SB = [160, 60, 160];
+const sPos = new Float32Array(SN * 3);
+for (let i = 0; i < SN; i++) { sPos[i*3] = Math.random()*SB[0]; sPos[i*3+1] = Math.random()*SB[1]; sPos[i*3+2] = Math.random()*SB[2]; }
+const sGeo = new THREE.BufferGeometry(); sGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
+const stormMat = new THREE.ShaderMaterial({
+  uniforms: { ...U, uScale: PU.uScale, uCam: PU.uCam, uOff: PU.uOff, uOpacity: { value: 0 }, uFogCol: PU.uFogCol },
+  transparent: true, depthWrite: false,
+  vertexShader: COMMON + `uniform float uScale; uniform vec3 uCam; uniform vec3 uOff; uniform float uOpacity;
+    varying float vA; varying float vD;
+    void main(){ vec3 B=vec3(160.,60.,160.);
+      vec3 l=mod(position+uOff-uCam,B)-B*.5;
+      l.y+=sin(uTime*2.3+position.x)*.8; l.x+=sin(uTime*3.1+position.z)*.6;
+      vec3 w=uCam+l; vec4 mv=viewMatrix*vec4(w,1.); vD=-mv.z;
+      float s=.16*uScale/max(vD,.1); gl_PointSize=clamp(s,1.,28.);
+      vA=uOpacity*min(1.,s)*(1.-smoothstep(45.,78.,length(l.xz)))*smoothstep(.6,3.,vD);
+      gl_Position=projectionMatrix*mv; }`,
+  fragmentShader: COMMON + `uniform vec3 uFogCol; varying float vA; varying float vD;
+    void main(){ float r=length(gl_PointCoord-.5); if(r>.5) discard;
+      vec3 c=vec3(.95,.58,.3)*(uSunCol*.5+uAmb*1.3);
+      float f=1.-exp(-pow(vD*uFogD*.6,2.)); c=mix(c,uFogCol,f);
+      gl_FragColor=vec4(outCol(c),vA*smoothstep(.5,.15,r)*(1.-f*.7)); }`
+});
+const stormPts = new THREE.Points(sGeo, stormMat);
+stormPts.frustumCulled = false;
+scene.add(stormPts);
+
+/* ---------------- dust puffs (billboards) ---------------- */
+const PN = 50;
+const puffMat = new THREE.ShaderMaterial({
+  uniforms: { ...U, uOpacity: { value: 0 } }, transparent: true, depthWrite: false,
+  vertexShader: `varying vec2 vUv; varying float vSeed; varying float vDist;
+    void main(){ vec3 c=(instanceMatrix*vec4(0.,0.,0.,1.)).xyz; float s=length(instanceMatrix[0].xyz);
+      vec3 r=vec3(viewMatrix[0][0],viewMatrix[1][0],viewMatrix[2][0]);
+      vec3 u=vec3(viewMatrix[0][1],viewMatrix[1][1],viewMatrix[2][1]);
+      vec3 w=c+(r*position.x+u*position.y)*s; vUv=uv; vSeed=float(gl_InstanceID)*7.31;
+      vDist=distance(w,cameraPosition); gl_Position=projectionMatrix*viewMatrix*vec4(w,1.); }`,
+  fragmentShader: COMMON + `uniform float uOpacity; varying vec2 vUv; varying float vSeed; varying float vDist;
+    void main(){ float r=length(vUv-.5)*2.;
+      float n=fbm(vUv*3.+vSeed+vec2(uTime*.15,-uTime*.05));
+      float a=smoothstep(1.,.2,r)*n*n*uOpacity*smoothstep(3.,14.,vDist);
+      vec3 c=mix(vec3(.30,.13,.05),vec3(.85,.45,.2),n)*(uSunCol*.4+uAmb*1.2);
+      gl_FragColor=vec4(outCol(c),a); }`
+});
+const puffs = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), puffMat, PN);
+puffs.frustumCulled = false;
+scene.add(puffs);
+const pP = [], dummy = new THREE.Object3D();
+for (let i = 0; i < PN; i++) pP.push({ p: new THREE.Vector3(), s: 1, init: false });
+
+/* ---------------- dust wall ---------------- */
+const WH = 1150;
+const thC = Math.atan2(-windDir.x, -windDir.z);
+const wallMat = new THREE.ShaderMaterial({
+  uniforms: { ...U, uOpacity: { value: 0 }, uDistFog: { value: 1 } },
+  transparent: true, depthWrite: false, side: THREE.DoubleSide,
+  vertexShader: `varying vec2 vUv; varying vec3 vW;
+    void main(){ vUv=uv; vec4 w=modelMatrix*vec4(position,1.); vW=w.xyz; gl_Position=projectionMatrix*viewMatrix*w; }`,
+  fragmentShader: COMMON + `uniform float uOpacity; uniform float uDistFog; varying vec2 vUv; varying vec3 vW;
+    void main(){
+      vec2 uv=vUv; float t=uTime;
+      vec2 q=vec2(uv.x*40.,uv.y*7.);
+      float d1=fbm(q*.6+vec2(t*.05,-t*.12));
+      float d2=fbm(q*1.3+vec2(-t*.08,-t*.2)+d1*2.);
+      float top=.45+.4*fbm(vec2(uv.x*14.+t*.03,t*.05));
+      float hgt=uv.y-d2*.15;
+      float edge=smoothstep(top+.02,top-.25,hgt);
+      float side=smoothstep(0.,.12,uv.x)*smoothstep(1.,.88,uv.x);
+      float a=edge*side*uOpacity;
+      vec3 V=normalize(vW-cameraPosition);
+      float fs=pow(max(dot(V,uSun),0.),4.);
+      vec3 dark=vec3(.20,.08,.03), lite=vec3(.95,.48,.2);
+      float shade=clamp(d2*1.1+uv.y*.6-.3,0.,1.);
+      vec3 c=mix(dark,lite,shade)*(uSunCol*.35+uAmb*.8);
+      c+=vec3(1.,.55,.25)*uSunCol*.3*smoothstep(.25,0.,top-hgt)*(.4+fs*1.5);
+      c=mix(c,skyCol(normalize(vec3(V.x,.03,V.z))),uDistFog);
+      gl_FragColor=vec4(outCol(c),a);
+    }`
+});
+const wall = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 96, 1, true, thC - 1.3, 2.6), wallMat);
+wall.frustumCulled = false;
+wall.renderOrder = 5;
+scene.add(wall);
+
+/* ---------------- UI ---------------- */
+const $ = id => document.getElementById(id);
+let wind = 8, stormOn = false;
+$('wind').oninput = e => { wind = +e.target.value; $('wv').textContent = wind.toFixed(1); };
+$('storm').onclick = () => { stormOn = !stormOn; $('storm').classList.toggle('on', stormOn);
+  $('storm').textContent = stormOn ? 'CLEAR STORM' : 'SANDSTORM'; };
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  PU.uScale.value = innerHeight * PR * 0.5 / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+}
+addEventListener('resize', resize); resize();
+
+/* ---------------- camera path ---------------- */
+const path = t => ({ x: t * 9, z: 260 * Math.sin(t * 0.011) + 90 * Math.sin(t * 0.027 + 1) });
+let ct = 0, camY = null;
+const look = new THREE.Vector3();
+function updateCamera(dt, shake) {
+  ct += dt;
+  const p = path(ct);
+  let hm = 0;
+  for (let k = 0; k <= 8; k += 2) { const q = path(ct + k); hm = Math.max(hm, duneH(q.x, q.z)); }
+  const ty = hm + 16 + 5 * Math.sin(ct * 0.07);
+  camY = camY === null ? ty : camY + (ty - camY) * (1 - Math.exp(-dt * 1.5));
+  const sx = shake * (Math.sin(ct * 37) + Math.sin(ct * 23.3)) * 0.08;
+  const sy = shake * (Math.sin(ct * 31.7) + Math.sin(ct * 19.1)) * 0.06;
+  camera.position.set(p.x, camY + sy, p.z + sx);
+  const a = path(ct + 14);
+  look.set(a.x, camY - 6 + 4 * Math.sin(ct * 0.05), a.z + 30 * Math.sin(ct * 0.03));
+  camera.lookAt(look);
+  camera.rotateZ(0.02 * Math.sin(ct * 0.04));
+}
+
+/* ---------------- crest particle sim ---------------- */
+function spawnCrest(i, cx, cz, heading, w) {
+  let bx = 0, bz = 0, bh = 0, br = -1;
+  for (let k = 0; k < 5; k++) {
+    const ang = heading + (Math.random() - 0.5) * 2.2;
+    const d = 15 + Math.pow(Math.random(), 1.6) * 550;
+    const x = cx + Math.cos(ang) * d, z = cz + Math.sin(ang) * d;
+    const h = duneH(x, z);
+    if (lastR1 > br) { br = lastR1; bx = x; bz = z; bh = h; }
+  }
+  cPos[i*3] = bx; cPos[i*3+1] = bh + 0.3; cPos[i*3+2] = bz;
+  const sp = w * (0.5 + 0.5 * Math.random());
+  cVel[i*3] = windDir.x * sp; cVel[i*3+1] = Math.random() * w * 0.09; cVel[i*3+2] = windDir.z * sp;
+  cMax[i] = cLife[i] = 1.5 + Math.random() * 3;
+}
+function updateCrest(dt, w) {
+  const active = w < 2 ? 0 : Math.floor(CN * Math.pow(w / 30, 1.2));
+  const cx = camera.position.x, cz = camera.position.z;
+  const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd);
+  const heading = Math.atan2(fwd.z, fwd.x);
+  for (let i = 0; i < CN; i++) {
+    cLife[i] -= dt;
+    if (cLife[i] <= 0) {
+      if (i < active) spawnCrest(i, cx, cz, heading, w);
+      else { cA[i] = 0; continue; }
+    }
+    const j = i * 3;
+    cVel[j] += (windDir.x * w - cVel[j]) * dt * 0.8;
+    cVel[j+2] += (windDir.z * w - cVel[j+2]) * dt * 0.8;
+    cVel[j+1] -= 0.6 * dt;
+    cPos[j] += cVel[j] * dt; cPos[j+1] += cVel[j+1] * dt; cPos[j+2] += cVel[j+2] * dt;
+    cA[i] = Math.sin(Math.PI * cLife[i] / cMax[i]) * 0.55;
+  }
+  cGeo.attributes.position.needsUpdate = true;
+  cGeo.attributes.aA.needsUpdate = true;
+}
+
+/* ---------------- puffs ---------------- */
+function updatePuffs(dt, w) {
+  const c = camera.position;
+  for (let i = 0; i < PN; i++) {
+    const o = pP[i];
+    const r = o.p.clone().sub(c);
+    const along = r.x * windDir.x + r.z * windDir.z;
+    if (!o.init || along > 40 || r.length() > 140) {
+      o.init = true;
+      const d = o.init && Math.random() < 2 ? 30 + Math.random() * 80 : 0;
+      const lat = (Math.random() - 0.5) * 140;
+      o.p.set(c.x - windDir.x * d - windDir.z * lat, c.y + (Math.random() - 0.4) * 30, c.z - windDir.z * d + windDir.x * lat);
+      o.s = 20 + Math.random() * 40;
+    }
+    o.p.addScaledVector(windDir, w * dt * 0.9);
+    dummy.position.copy(o.p); dummy.scale.setScalar(o.s); dummy.updateMatrix();
+    puffs.setMatrixAt(i, dummy.matrix);
+  }
+  puffs.instanceMatrix.needsUpdate = true;
+}
+
+/* ---------------- main loop ---------------- */
+const clock = new THREE.Clock();
+let s = 0, frames = 0, fpsT = 0, time = 0;
+const lerp = (a, b, t) => a + (b - a) * t;
+const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+const cSunA = new THREE.Color(3.0, 1.9, 1.1), cSunB = new THREE.Color(0.75, 0.38, 0.15);
+const cAmbA = new THREE.Color(0.17, 0.2, 0.3), cAmbB = new THREE.Color(0.32, 0.17, 0.07);
+const cFogA = new THREE.Color(1.05, 0.6, 0.34), cFogB = new THREE.Color(0.6, 0.32, 0.14);
+
+function frame() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  time += dt;
+
+  s = stormOn ? Math.min(1, s + dt / 6.5) : Math.max(0, s - dt / 5);
+  const wallP = Math.min(1, s / 0.77);
+  const fogAmt = ss(0.7, 0.95, s);
+  const skyStorm = ss(0.2, 0.9, s);
+  const effWind = lerp(wind, Math.max(wind, 28), ss(0.3, 0.9, s));
+
+  // lighting
+  U.uTime.value = time;
+  U.uSkyStorm.value = skyStorm;
+  U.uSunCol.value.copy(cSunA).lerp(cSunB, skyStorm);
+  U.uAmb.value.copy(cAmbA).lerp(cAmbB, skyStorm);
+  U.uExposure.value = lerp(1.0, 0.95, skyStorm);
+  PU.uFogCol.value.copy(cFogA).lerp(cFogB, skyStorm);
+  let dens = 0.00055 * Math.pow(0.04 / 0.00055, fogAmt) * (1 + effWind / 30 * 0.6);
+  dens *= 1 + 0.25 * fogAmt * Math.sin(time * 1.3) * Math.sin(time * 0.71);
+  U.uFogD.value = dens;
+
+  updateCamera(dt, fogAmt + ss(18, 30, effWind) * 0.3);
+  const c = camera.position;
+  sky.position.copy(c);
+  terrain.position.set(Math.round(c.x / CELL) * CELL, 0, Math.round(c.z / CELL) * CELL);
+
+  // wall
+  const r = 3200 * (1 - wallP) + 30;
+  wall.scale.set(r, WH, r);
+  wall.position.set(c.x, WH / 2 - 150, c.z);
+  wallMat.uniforms.uOpacity.value = ss(0, 0.05, s) * (1 - ss(0.82, 0.95, s));
+  wallMat.uniforms.uDistFog.value = 1 - Math.exp(-Math.pow(r * 0.0005, 2));
+  wall.visible = wallMat.uniforms.uOpacity.value > 0.001;
+
+  // particles
+  updateCrest(dt, effWind);
+  PU.uCam.value.copy(c);
+  PU.uOff.value.addScaledVector(windDir, effWind * dt);
+  stormMat.uniforms.uOpacity.value = Math.max(fogAmt * 0.9, ss(15, 30, effWind) * 0.25);
+  stormPts.visible = stormMat.uniforms.uOpacity.value > 0.001;
+  puffMat.uniforms.uOpacity.value = fogAmt * 0.6 + ss(20, 30, effWind) * 0.1;
+  puffs.visible = puffMat.uniforms.uOpacity.value > 0.001;
+  if (puffs.visible) updatePuffs(dt, effWind);
+
+  renderer.render(scene, camera);
+
+  // HUD
+  frames++; fpsT += dt;
+  if (fpsT >= 0.5) {
+    $('hf').textContent = Math.round(frames / fpsT);
+    frames = 0; fpsT = 0;
+  }
+  $('hw').textContent = effWind.toFixed(1) + ' m/s';
+  const vis = 1.73 / dens;
+  $('hv').textContent = (vis > 1000 ? (vis / 1000).toFixed(1) + ' k' : Math.round(vis) + ' ') + 'm';
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
